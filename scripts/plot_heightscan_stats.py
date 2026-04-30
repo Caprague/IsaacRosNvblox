@@ -1,18 +1,38 @@
 #!/usr/bin/env python3
 """
-可视化 nvblox_heightscan_stats.csv 日志文件。
+可视化 nvblox_heightscan_stats CSV 日志文件。
 
 用法:
-    python3 plot_heightscan_stats.py /path/to/nvblox_heightscan_stats.csv
+    python3 plot_heightscan_stats.py [csv_path] [--save PATH]
 
-默认读取路径: /tmp/nvblox_heightscan_stats.csv
+默认读取路径: temp/logs/
+  - 未指定文件时，自动读取该目录下最新的 nvblox_heightscan_stats_*.csv 文件
+  - 可通过参数指定具体文件路径
 """
 
 import argparse
+import glob
+import os
 import sys
 
 import matplotlib.pyplot as plt
 import numpy as np
+
+# 默认日志目录（相对于脚本所在项目的根目录）
+SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+PROJECT_ROOT = os.path.dirname(SCRIPT_DIR)
+DEFAULT_LOG_DIR = os.path.join(PROJECT_ROOT, "temp", "logs")
+
+
+def find_latest_log(log_dir=None):
+    """在日志目录中查找最新的 CSV 日志文件。"""
+    if log_dir is None:
+        log_dir = DEFAULT_LOG_DIR
+    pattern = os.path.join(log_dir, "nvblox_heightscan_stats_*.csv")
+    files = sorted(glob.glob(pattern))
+    if not files:
+        return None
+    return files[-1]  # 按文件名排序（含日期时间），最新的在最后
 
 
 def load_data(csv_path):
@@ -93,7 +113,7 @@ def plot(data, save_path=None):
     ax.plot(t, freq_raw, color="C1", linewidth=0.8, alpha=0.4, label="raw")
     ax.plot(t, freq_smooth, color="C1", linewidth=1.8, label="filtered")
     ax.set_ylabel("Freq (Hz)")
-    ax.set_ylim(bottom=0)
+    ax.set_ylim(0, 100)
     ax.legend(loc="upper right")
     ax.grid(True, linestyle="--", alpha=0.5)
     ax.set_title("Publish Frequency")
@@ -149,12 +169,14 @@ def plot(data, save_path=None):
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Plot HeightScan statistics from CSV log.")
+    parser = argparse.ArgumentParser(
+        description="Plot HeightScan statistics from CSV log.")
     parser.add_argument(
         "csv",
         nargs="?",
-        default="/tmp/nvblox_heightscan_stats.csv",
-        help="Path to the CSV log file (default: /tmp/nvblox_heightscan_stats.csv)",
+        default=None,
+        help="Path to the CSV log file. If omitted, auto-detects the latest "
+             f"file in {DEFAULT_LOG_DIR}",
     )
     parser.add_argument(
         "--save",
@@ -164,17 +186,28 @@ def main():
     )
     args = parser.parse_args()
 
+    # 确定要读取的 CSV 文件
+    csv_path = args.csv
+    if csv_path is None:
+        csv_path = find_latest_log()
+        if csv_path is None:
+            print(f"Error: no CSV files found in {DEFAULT_LOG_DIR}", file=sys.stderr)
+            print("Specify a file path explicitly: "
+                  "python3 plot_heightscan_stats.py <path>", file=sys.stderr)
+            sys.exit(1)
+        print(f"Auto-detected latest log: {csv_path}")
+
     try:
-        data = load_data(args.csv)
+        data = load_data(csv_path)
     except FileNotFoundError:
-        print(f"Error: file not found: {args.csv}")
+        print(f"Error: file not found: {csv_path}", file=sys.stderr)
         sys.exit(1)
 
     if len(data["timestamp_sec"]) == 0:
-        print("Error: no valid data rows found in CSV.")
+        print("Error: no valid data rows found in CSV.", file=sys.stderr)
         sys.exit(1)
 
-    print(f"Loaded {len(data['timestamp_sec'])} records from {args.csv}")
+    print(f"Loaded {len(data['timestamp_sec'])} records from {csv_path}")
     plot(data, save_path=args.save)
 
 

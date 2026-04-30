@@ -18,10 +18,8 @@
 #ifndef NVBLOX_ROS__LAYER_PUBLISHING_HPP_
 #define NVBLOX_ROS__LAYER_PUBLISHING_HPP_
 
-#include <fstream>
 #include <memory>
 #include <string>
-#include <tuple>
 #include <vector>
 
 #include <rclcpp/rclcpp.hpp>
@@ -68,20 +66,15 @@ public:
     std::shared_ptr<Mapper> dynamic_mapper, const rclcpp::Logger & logger);
 
   /// Serialize and publish mesh layer and height scan data, when any have active subscribers
-  ///
-  /// @param T_L_C Transformation used for radial exclusion
-  /// @param frame_id Frame id for the published visualization topics
-  /// @param timestamp Timestamp for the published visualization topics
-  /// @param static_mapper Static mapper
-  /// @param dynamic_mapper Dynamic mapper. Can be nullptr if not available
-  /// @param logger ROS logger
+  /// @param height_data_out Output: robot-relative height values for stats logging by caller
   void publishLocomotionHeightScan(
     const Transform & T_L_C, const std::string & frame_id,
     rclcpp::Time timestamp, const float layer_streamer_bandwidth_limit_mbps,
     std::shared_ptr<Mapper> static_mapper,
     std::shared_ptr<Mapper> dynamic_mapper,
     const rclcpp::Logger & logger,
-    const CudaStream& cuda_stream);
+    const CudaStream& cuda_stream,
+    std::vector<float>* height_data_out = nullptr);
 
   /// Serialize and publish mesh layer and height scan data, when any have active subscribers
   ///
@@ -126,12 +119,14 @@ private:
     const rclcpp::Time & timestamp, const rclcpp::Logger & logger);
 
   /// Implementation of publishLocomotionHeightScan
+  /// @param height_data_out Output: robot-relative height values
   void publishLocomotionHeightScan_impl(
-    TsdfLayer& tsdf_layer,  // 改为非const，因为可能需要初始化地平面
+    TsdfLayer& tsdf_layer,
     const Transform& base_pose,
     const rclcpp::Time& timestamp,
     const rclcpp::Logger& logger,
-    const CudaStream& cuda_stream);
+    const CudaStream& cuda_stream,
+    std::vector<float>* height_data_out = nullptr);
   
   /// Implementation of publishNavigationHeightScan
   void publishNavigationHeightScan_impl(
@@ -188,35 +183,6 @@ private:
   // 可视化发布
   rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr locomotion_hs_pc_publisher_;
   rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr navigation_hs_pc_publisher_;
-
-  // ---- HeightScan 统计与系统资源日志 ----
-  rclcpp::Node * node_ = nullptr;
-  std::ofstream heightscan_log_file_;
-  rclcpp::Time last_publish_time_;
-  bool first_publish_ = true;
-
-  // CPU 统计缓存（用于计算 CPU 使用率百分比）
-  unsigned long long last_cpu_total_ = 0;
-  unsigned long long last_cpu_idle_ = 0;
-  bool cpu_stat_initialized_ = false;
-
-  /// 初始化 CSV 日志文件（写入表头）
-  void initializeHeightScanLogger(const std::string& log_path);
-
-  /// 记录一次 HeightScan 的统计与系统资源
-  void logHeightScanStats(
-    const rclcpp::Time& timestamp,
-    const std::vector<float>& heights,
-    float publish_freq_hz);
-
-  /// 读取 CPU 使用率百分比（基于 /proc/stat）
-  float getCpuLoadPercent();
-
-  /// 读取内存使用量，返回 {used_mb, total_mb}
-  std::tuple<float, float> getMemUsageMB();
-
-  /// 读取 GPU 负载百分比（Jetson: /sys/devices/platform/gpu.0/load）
-  float getGpuLoadPercent();
 };
 
 }  // namespace nvblox

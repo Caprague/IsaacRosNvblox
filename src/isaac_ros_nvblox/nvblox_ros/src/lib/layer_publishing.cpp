@@ -594,7 +594,8 @@ void LayerPublisher::publishLocomotionHeightScan(
   std::shared_ptr<Mapper> static_mapper,
   std::shared_ptr<Mapper> dynamic_mapper,
   const rclcpp::Logger& logger,
-  const CudaStream& cuda_stream) 
+  const CudaStream& cuda_stream,
+  std::vector<float>* height_data_out) 
 {
   CHECK_NOTNULL(static_mapper);
   LayerTypeBitMask layers_to_stream = getLayersToStreamBitMask();
@@ -605,7 +606,8 @@ void LayerPublisher::publishLocomotionHeightScan(
       T_L_C, 
       timestamp,
       logger, 
-      cuda_stream
+      cuda_stream,
+      height_data_out
     );
   }
 }
@@ -636,7 +638,8 @@ void LayerPublisher::publishLocomotionHeightScan_impl(
   const Transform& base_pose,
   const rclcpp::Time& timestamp,
   const rclcpp::Logger& logger,
-  const CudaStream& cuda_stream) 
+  const CudaStream& cuda_stream,
+  std::vector<float>* height_data_out) 
 {
   // 采样参数
   const float range_x = 1.6f;
@@ -720,20 +723,9 @@ void LayerPublisher::publishLocomotionHeightScan_impl(
   }
   locomotion_hs_pc_publisher_->publish(locomotion_hs_pc_msg);
 
-  // ---- 高程统计、发布频率与系统资源记录 ----
-  float publish_freq_hz = 0.0f;
-  if (!first_publish_) {
-    const double dt = (timestamp - last_publish_time_).seconds();
-    if (dt > 1e-6) {
-      publish_freq_hz = static_cast<float>(1.0 / dt);
-    }
-  } else {
-    first_publish_ = false;
-  }
-  last_publish_time_ = timestamp;
-
-  if (heightscan_log_file_.is_open()) {
-    logHeightScanStats(timestamp, height_scam_z_data, publish_freq_hz);
+  // 输出高程数据供调用方记录统计
+  if (height_data_out) {
+    *height_data_out = height_scam_z_data;
   }
 }
 
@@ -827,8 +819,7 @@ LayerPublisher::LayerPublisher(
   rclcpp::Node * node)
 : min_tsdf_weight_(min_tsdf_weight),
   exclusion_height_m_(exclusion_height_m),
-  exclusion_radius_m_(exclusion_radius_m),
-  node_(node)
+  exclusion_radius_m_(exclusion_radius_m)
 {
   // Mesh publishers
   mesh_publisher_ = node->create_publisher<nvblox_msgs::msg::Mesh>("~/mesh", 1);
@@ -888,15 +879,6 @@ LayerPublisher::LayerPublisher(
 
   // 初始化 CUDA 垂直光线投射采样器
   ray_caster_ = std::make_unique<conversions::CudaVerticalRayCaster>(3.0f);
-
-  // 初始化 HeightScan CSV 日志
-  std::string log_path = "/tmp/nvblox_heightscan_stats.csv";
-  if (node_->has_parameter("heightscan_log_path")) {
-    node_->get_parameter("heightscan_log_path", log_path);
-  } else {
-    log_path = node_->declare_parameter<std::string>("heightscan_log_path", log_path);
-  }
-  initializeHeightScanLogger(log_path);
 }
 
 
@@ -1089,157 +1071,6 @@ void LayerPublisher::serializeAndpublishSubscribedLayers(
   }
 
   publish_layer_timer.Stop();
-}
-
-// ---- HeightScan 统计与系统资源日志实现 ----
-
-void LayerPublisher::initializeHeightScanLogger(const std::string& log_path)
-{
-  heightscan_log_file_.open(log_path, std::ios::out | std::ios::app);
-  if (heightscan_log_file_.is_open()) {
-    // 如果文件为空，写入 CSV 表头
-    heightscan_log_file_.seekp(0, std::ios::end);
-    if (heightscan_log_file_.tellp() == 0) {
-      heightscan_log_file_
-        << "timestamp_sec,mean_height,max_deviation,publish_freq_hz,"
-        << "cpu_load_percent,mem_used_mb,mem_total_mb,gpu_load_percent\n";
-      heightscan_log_file_.flush();
-    }
-    RCLCPP_INFO(
-      node_->get_logger(),
-      "HeightScan stats logging to: %s", log_path.c_str());
-  } else {
-    RCLCPP_WARN(
-      node_->get_logger(),
-      "Failed to open HeightScan log file: %s", log_path.c_str());
-  }
-}
-
-void LayerPublisher::logHeightScanStats(
-  const rclcpp::Time& timestamp,
-  const std::vector<float>& heights,
-  float publish_freq_hz)
-{
-  if (heights.empty()) {
-    return;
-  }
-
-  // 计算均值
-  double sum = 0.0;
-  float min_h = heights[0];
-  float max_h = heights[0];
-  for (float h : heights) {
-    sum += h;
-    if (h < min_h) { min_h = h; }
-    if (h > max_h) { max_h = h; }
-  }
-  const float mean = static_cast<float>(sum / heights.size());
-  const float max_deviation = max_h - min_h;
-
-  // 读取系统资源
-  const float cpu_load = getCpuLoadPercent();
-  const auto [mem_used_mb, mem_total_mb] = getMemUsageMB();
-  const float gpu_load = getGpuLoadPercent();
-
-  const double ts_sec = timestamp.seconds();
-
-  heightscan_log_file_
-    << std::fixed << std::setprecision(6) << ts_sec << ","
-    << std::setprecision(4) << mean << ","
-    << max_deviation << ","
-    << std::setprecision(2) << publish_freq_hz << ","
-    << std::setprecision(1) << cpu_load << ","
-    << std::setprecision(1) << mem_used_mb << ","
-    << std::setprecision(1) << mem_total_mb << ","
-    << std::setprecision(1) << gpu_load << "\n";
-  heightscan_log_file_.flush();
-}
-
-float LayerPublisher::getCpuLoadPercent()
-{
-  std::ifstream stat_file("/proc/stat");
-  if (!stat_file.is_open()) {
-    return -1.0f;
-  }
-
-  std::string line;
-  std::getline(stat_file, line);
-  stat_file.close();
-
-  unsigned long long user = 0, nice = 0, system = 0, idle = 0;
-  unsigned long long iowait = 0, irq = 0, softirq = 0, steal = 0;
-  std::istringstream iss(line);
-  std::string cpu_label;
-  iss >> cpu_label >> user >> nice >> system >> idle >> iowait >> irq >> softirq >> steal;
-
-  const unsigned long long total = user + nice + system + idle + iowait + irq + softirq + steal;
-  const unsigned long long total_idle = idle + iowait;
-
-  if (!cpu_stat_initialized_) {
-    last_cpu_total_ = total;
-    last_cpu_idle_ = total_idle;
-    cpu_stat_initialized_ = true;
-    return 0.0f;
-  }
-
-  const unsigned long long total_delta = total - last_cpu_total_;
-  const unsigned long long idle_delta = total_idle - last_cpu_idle_;
-  last_cpu_total_ = total;
-  last_cpu_idle_ = total_idle;
-
-  if (total_delta == 0) {
-    return 0.0f;
-  }
-  return 100.0f * (1.0f - static_cast<float>(idle_delta) / static_cast<float>(total_delta));
-}
-
-std::tuple<float, float> LayerPublisher::getMemUsageMB()
-{
-  std::ifstream meminfo("/proc/meminfo");
-  if (!meminfo.is_open()) {
-    return {-1.0f, -1.0f};
-  }
-
-  std::string line;
-  float mem_total_kb = -1.0f;
-  float mem_available_kb = -1.0f;
-  while (std::getline(meminfo, line)) {
-    if (line.find("MemTotal:") == 0) {
-      std::istringstream iss(line);
-      std::string label;
-      iss >> label >> mem_total_kb;
-    } else if (line.find("MemAvailable:") == 0) {
-      std::istringstream iss(line);
-      std::string label;
-      iss >> label >> mem_available_kb;
-    }
-    if (mem_total_kb >= 0 && mem_available_kb >= 0) {
-      break;
-    }
-  }
-  meminfo.close();
-
-  if (mem_total_kb < 0 || mem_available_kb < 0) {
-    return {-1.0f, -1.0f};
-  }
-
-  const float used_kb = mem_total_kb - mem_available_kb;
-  return {used_kb / 1024.0f, mem_total_kb / 1024.0f};
-}
-
-float LayerPublisher::getGpuLoadPercent()
-{
-  std::ifstream gpu_load_file("/sys/devices/platform/gpu.0/load");
-  if (!gpu_load_file.is_open()) {
-    return -1.0f;
-  }
-
-  int load_raw = 0;
-  gpu_load_file >> load_raw;
-  gpu_load_file.close();
-
-  // Jetson 平台：读数值为百分比 * 10（例如 1000 表示 100%）
-  return static_cast<float>(load_raw) / 10.0f;
 }
 
 }  // namespace nvblox

@@ -197,8 +197,11 @@ protected:
   virtual void processServiceRequestTaskQueue();
   virtual void processEsdf();
 
-  // Dedicated height scan thread entry point (runs at stable 50Hz, decoupled from tick)
+  // Dedicated worker thread entry points (decoupled from tick)
   void heightScanThreadFunc();
+  void integrationThreadFunc();
+  void maintenanceThreadFunc();
+  void outputThreadFunc();
 
   // Return true if the time between the two passed timestamps is sufficient to trigger an action
   // under the requested rate.
@@ -465,9 +468,50 @@ protected:
 
   // Dedicated thread for height scan at stable 50Hz
   std::thread height_scan_thread_;
-
   // Shutdown flag for the height scan thread
   std::atomic<bool> height_scan_running_{false};
+
+  // Dedicated thread for sensor integration (depth/color/pointcloud)
+  std::thread integration_thread_;
+  std::atomic<bool> integration_running_{false};
+  std::condition_variable integration_cv_;
+  std::mutex integration_cv_mutex_;
+
+  // Dedicated thread for maintenance tasks (decay, map clearing)
+  std::thread maintenance_thread_;
+  std::atomic<bool> maintenance_running_{false};
+
+  // Dedicated thread for output tasks (ESDF, layer publishing, debug vis)
+  std::thread output_thread_;
+  std::atomic<bool> output_running_{false};
+
+  // ---- HeightScan 统计与系统资源日志 ----
+  std::ofstream heightscan_log_file_;
+  rclcpp::Time heightscan_last_publish_time_ = rclcpp::Time(0, 0, RCL_ROS_TIME);
+  bool heightscan_first_publish_ = true;
+
+  // CPU 统计缓存
+  unsigned long long heightscan_last_cpu_total_ = 0;
+  unsigned long long heightscan_last_cpu_idle_ = 0;
+  bool heightscan_cpu_stat_initialized_ = false;
+
+  /// 初始化 CSV 日志文件（写入表头）
+  void initializeHeightScanLogger();
+
+  /// 记录一次 HeightScan 的统计与系统资源
+  void logHeightScanStats(
+    const rclcpp::Time& timestamp,
+    const std::vector<float>& heights,
+    float publish_freq_hz);
+
+  /// 读取 CPU 使用率百分比（基于 /proc/stat）
+  float getCpuLoadPercent();
+
+  /// 读取内存使用量，返回 {used_mb, total_mb}
+  std::tuple<float, float> getMemUsageMB();
+
+  /// 读取 GPU 负载百分比（Jetson: /sys/devices/platform/gpu.0/load）
+  float getGpuLoadPercent();
 
   /// The time stamp of the last frame contributing to the reconstruction.
   rclcpp::Time newest_integrated_depth_time_ = rclcpp::Time(0, 0, RCL_ROS_TIME);

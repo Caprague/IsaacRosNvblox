@@ -13,18 +13,33 @@
     # Parameters governing frequency of different processing steps in the reconstruction pipeline.
     # Processing happens every n:th tick_period. <=0 means that no processing take place
     tick_period_ms: 10
+
+    # --- Integration thread rates (event-driven, these control per-queue processing frequency) ---
     integrate_depth_rate_hz: 40.0
     integrate_color_rate_hz: 5.0
     integrate_lidar_rate_hz: 15.0
-    update_mesh_rate_hz: 5.0
-    update_esdf_rate_hz: 10.0
-    publish_locomotion_height_scan_rate_hz: 51.0
+
+    # --- Height scan thread rate (dedicated 50Hz thread) ---
+    publish_locomotion_height_scan_rate_hz: 50.0
     publish_navigation_height_scan_rate_hz: 20.0
+    enable_heightscan_stats_logging: true
+
+    # --- Maintenance thread rates ---
+    # Thread wake-up rate = max(decay_tsdf, decay_dynamic_occupancy, clear_map_outside_radius)
+    # Each operation executes at its own rate via shouldProcess gating
+    decay_tsdf_rate_hz: 5.0
+    decay_dynamic_occupancy_rate_hz: 5.0
+    clear_map_outside_radius_rate_hz: 1.0
+
+    # --- Output thread rates ---
+    # Thread wake-up rate = max(update_esdf, publish_layer, publish_debug_vis)
+    # Each operation executes at its own rate via shouldProcess gating
+    update_esdf_rate_hz: 5.0
     publish_layer_rate_hz: 5.0
     publish_debug_vis_rate_hz: 2.0
-    decay_tsdf_rate_hz: 5.0
-    decay_dynamic_occupancy_rate_hz: 10.0
-    clear_map_outside_radius_rate_hz: 1.0
+
+    # --- Other processing rates ---
+    update_mesh_rate_hz: 5.0
 
     # printing statistics on console
     print_rates_to_console: true

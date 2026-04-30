@@ -23,11 +23,17 @@
 #include <nvblox/utils/delays.h>
 #include <nvblox/utils/rates.h>
 
+#include <chrono>
+#include <filesystem>
+#include <fstream>
+#include <iomanip>
 #include <limits>
 #include <memory>
 #include <mutex>
 #include <shared_mutex>
+#include <sstream>
 #include <string>
+#include <tuple>
 #include <utility>
 #include <vector>
 
@@ -106,6 +112,23 @@ NvbloxNode::NvbloxNode(
   height_scan_running_ = true;
   height_scan_thread_ = std::thread(&NvbloxNode::heightScanThreadFunc, this);
 
+  // Start the dedicated integration thread (depth/color/pointcloud, event-driven)
+  integration_running_ = true;
+  integration_thread_ = std::thread(&NvbloxNode::integrationThreadFunc, this);
+
+  // Start the dedicated maintenance thread (decay, map clearing, ~5Hz)
+  maintenance_running_ = true;
+  maintenance_thread_ = std::thread(&NvbloxNode::maintenanceThreadFunc, this);
+
+  // Start the dedicated output thread (ESDF, publish layers, debug vis, ~5Hz)
+  output_running_ = true;
+  output_thread_ = std::thread(&NvbloxNode::outputThreadFunc, this);
+
+  // Initialize height scan stats logger
+  if (params_.enable_heightscan_stats_logging.get()) {
+    initializeHeightScanLogger();
+  }
+
   // Setup interactions with ROS
   subscribeToTopics();
   setupTimers();
@@ -131,7 +154,23 @@ NvbloxNode::NvbloxNode(
 
 NvbloxNode::~NvbloxNode()
 {
-  // Stop the height scan thread first, before any GPU/CUDA resources are released
+  // Stop all worker threads first, before any GPU/CUDA resources are released
+  integration_running_ = false;
+  integration_cv_.notify_all();
+  if (integration_thread_.joinable()) {
+    integration_thread_.join();
+  }
+
+  maintenance_running_ = false;
+  if (maintenance_thread_.joinable()) {
+    maintenance_thread_.join();
+  }
+
+  output_running_ = false;
+  if (output_thread_.joinable()) {
+    output_thread_.join();
+  }
+
   height_scan_running_ = false;
   if (height_scan_thread_.joinable()) {
     height_scan_thread_.join();
@@ -487,6 +526,7 @@ void NvbloxNode::depthPlusMaskImageCallback(
       std::make_shared<NitrosView>(depth_image_view), depth_camera_info,
       std::make_shared<NitrosView>(seg_image_view), seg_camera_info),
     depth_image_queue_, &depth_queue_mutex_);
+  integration_cv_.notify_all();
 }
 
 void NvbloxNode::depthImageCallback(
@@ -508,6 +548,7 @@ void NvbloxNode::depthImageCallback(
     "depth_queue",
     std::make_tuple(std::make_shared<NitrosView>(depth_image_view), depth_camera_info),
     depth_image_queue_, &depth_queue_mutex_);
+  integration_cv_.notify_all();
 }
 
 void NvbloxNode::colorPlusMaskImageCallback(
@@ -534,6 +575,7 @@ void NvbloxNode::colorPlusMaskImageCallback(
       std::make_shared<NitrosView>(color_image_view), color_camera_info,
       std::make_shared<NitrosView>(seg_image_view), seg_camera_info),
     color_image_queue_, &color_queue_mutex_);
+  integration_cv_.notify_all();
 }
 
 void NvbloxNode::colorImageCallback(
@@ -555,6 +597,7 @@ void NvbloxNode::colorImageCallback(
     "color_queue",
     std::make_tuple(std::make_shared<NitrosView>(color_image_view), color_camera_info),
     color_image_queue_, &color_queue_mutex_);
+  integration_cv_.notify_all();
 }
 
 void NvbloxNode::pointcloudCallback(
@@ -575,6 +618,7 @@ void NvbloxNode::pointcloudCallback(
   pushOntoQueue(
     kPointcloudQueueName, pointcloud, pointcloud_queue_,
     &pointcloud_queue_mutex_);
+  integration_cv_.notify_all();
 }
 
 void NvbloxNode::heightScanThreadFunc()
@@ -609,21 +653,58 @@ void NvbloxNode::heightScanThreadFunc()
         continue;
       }
 
-      // Hold shared_lock for entire sampling operation to prevent TSDF layer
-      // modification while GPU hash is referenced and ray casting kernel executes
-      std::shared_lock<std::shared_mutex> lock(tsdf_rw_mutex_);
+      // Try to acquire shared_lock with short retries instead of blocking.
+      // This prevents long blocking (when integration holds unique_lock) from
+      // causing low-frequency anomalies followed by catch-up high-frequency bursts.
+      constexpr int kMaxRetries = 3;
+      constexpr auto kRetryInterval = std::chrono::milliseconds(2);
+      std::shared_lock<std::shared_mutex> lock(tsdf_rw_mutex_, std::defer_lock);
+      bool lock_acquired = false;
+      for (int retry = 0; retry < kMaxRetries && height_scan_running_; ++retry) {
+        if (lock.try_lock()) {
+          lock_acquired = true;
+          break;
+        }
+        std::this_thread::sleep_for(kRetryInterval);
+      }
+
+      if (!lock_acquired) {
+        // Skip this cycle — better to miss one sample than block for 20-40ms
+        // and produce a low-high frequency anomaly pair
+        std::this_thread::sleep_until(next_wake_time);
+        next_wake_time += period;
+        continue;
+      }
 
       timing::Timer publish_timer("ros/publish_locomotion_height_scan");
 
       const std::string frame_id = params_.global_frame.get();
       const rclcpp::Time timestamp = get_clock()->now();
+      std::vector<float> height_data;
       layer_publisher_->publishLocomotionHeightScan(
           T_L_C, frame_id, timestamp,
           params_.layer_streamer_bandwidth_limit_mbps,
           static_mapper_, dynamic_mapper_,
-          get_logger(), *cuda_stream_);
+          get_logger(), *cuda_stream_,
+          &height_data);
 
       publish_timer.Stop();
+
+      // ---- HeightScan 统计、发布频率与系统资源记录 ----
+      float publish_freq_hz = 0.0f;
+      if (!heightscan_first_publish_) {
+        const double dt = (timestamp - heightscan_last_publish_time_).seconds();
+        if (dt > 1e-6) {
+          publish_freq_hz = static_cast<float>(1.0 / dt);
+        }
+      } else {
+        heightscan_first_publish_ = false;
+      }
+      heightscan_last_publish_time_ = timestamp;
+
+      if (heightscan_log_file_.is_open()) {
+        logHeightScanStats(timestamp, height_data, publish_freq_hz);
+      }
     }
 
     // Sleep until next wake time to maintain stable rate
@@ -632,6 +713,163 @@ void NvbloxNode::heightScanThreadFunc()
   }
 
   RCLCPP_INFO(get_logger(), "Height scan thread stopped");
+}
+
+void NvbloxNode::integrationThreadFunc()
+{
+  RCLCPP_INFO(get_logger(), "Integration thread started");
+
+  while (integration_running_) {
+    // Wait for new data or shutdown signal
+    {
+      std::unique_lock<std::mutex> cv_lock(integration_cv_mutex_);
+      integration_cv_.wait_for(cv_lock, std::chrono::milliseconds(10),
+        [this]() { return !integration_running_; });
+    }
+
+    if (!integration_running_) {
+      break;
+    }
+
+    // Process service calls (may modify TSDF: clearTsdfInsideShapes, loadMap)
+    {
+      std::unique_lock<std::shared_mutex> lock(tsdf_rw_mutex_);
+      processServiceRequestTaskQueue();
+    }
+
+    // Process each sensor queue under its own lock scope
+    // This allows height scan (shared_lock) to run between queue processing
+    {
+      std::unique_lock<std::shared_mutex> lock(tsdf_rw_mutex_);
+      if (params_.use_depth) {
+        processDepthQueue();
+      }
+    }
+
+    {
+      std::unique_lock<std::shared_mutex> lock(tsdf_rw_mutex_);
+      if (params_.use_color) {
+        processColorQueue();
+      }
+    }
+
+    {
+      std::unique_lock<std::shared_mutex> lock(tsdf_rw_mutex_);
+      if (params_.use_lidar) {
+        processPointcloudQueue();
+      }
+    }
+  }
+
+  RCLCPP_INFO(get_logger(), "Integration thread stopped");
+}
+
+void NvbloxNode::maintenanceThreadFunc()
+{
+  // Wake-up rate must be >= fastest sub-operation rate to avoid missing shouldProcess windows
+  const float max_maintenance_rate_hz = std::max({
+      params_.decay_tsdf_rate_hz.get(),
+      params_.decay_dynamic_occupancy_rate_hz.get(),
+      params_.clear_map_outside_radius_rate_hz.get()});
+  const double maintenance_period_sec = 1.0 / std::max(max_maintenance_rate_hz, 1.0f);
+  const auto period = std::chrono::duration<double>(maintenance_period_sec);
+  auto next_wake_time = std::chrono::steady_clock::now() + period;
+
+  RCLCPP_INFO(get_logger(), "Maintenance thread started at %.1f Hz wake-up rate",
+              max_maintenance_rate_hz);
+
+  while (maintenance_running_) {
+    std::this_thread::sleep_until(next_wake_time);
+    next_wake_time += period;
+
+    if (!maintenance_running_) {
+      break;
+    }
+
+    // Decay TSDF
+    if (const rclcpp::Time now = this->get_clock()->now();
+      shouldProcess(now, decay_tsdf_last_time_, params_.decay_tsdf_rate_hz))
+    {
+      std::unique_lock<std::shared_mutex> lock(tsdf_rw_mutex_);
+      decayTsdf();
+      decay_tsdf_last_time_ = now;
+    }
+
+    // Decay dynamic occupancy
+    if (const rclcpp::Time now = this->get_clock()->now();
+      (isUsingHumanOrDynamicMapper(params_.mapping_type)) &&
+      shouldProcess(
+        now, decay_dynamic_occupancy_last_time_,
+        params_.decay_dynamic_occupancy_rate_hz))
+    {
+      std::unique_lock<std::shared_mutex> lock(tsdf_rw_mutex_);
+      decayDynamicOccupancy();
+      decay_dynamic_occupancy_last_time_ = now;
+    }
+
+    // Clear map outside radius
+    if (const rclcpp::Time now = this->get_clock()->now(); shouldProcess(
+        now, clear_map_outside_radius_last_time_, params_.clear_map_outside_radius_rate_hz))
+    {
+      std::unique_lock<std::shared_mutex> lock(tsdf_rw_mutex_);
+      clearMapOutsideOfRadiusOfLastKnownPose();
+      clear_map_outside_radius_last_time_ = now;
+    }
+  }
+
+  RCLCPP_INFO(get_logger(), "Maintenance thread stopped");
+}
+
+void NvbloxNode::outputThreadFunc()
+{
+  // Wake-up rate must be >= fastest sub-operation rate to avoid missing shouldProcess windows
+  const float max_output_rate_hz = std::max({
+      params_.update_esdf_rate_hz.get(),
+      params_.publish_layer_rate_hz.get(),
+      params_.publish_debug_vis_rate_hz.get()});
+  const double output_period_sec = 1.0 / std::max(max_output_rate_hz, 1.0f);
+  const auto period = std::chrono::duration<double>(output_period_sec);
+  auto next_wake_time = std::chrono::steady_clock::now() + period;
+
+  RCLCPP_INFO(get_logger(), "Output thread started at %.1f Hz wake-up rate",
+              max_output_rate_hz);
+
+  while (output_running_) {
+    std::this_thread::sleep_until(next_wake_time);
+    next_wake_time += period;
+
+    if (!output_running_) {
+      break;
+    }
+
+    // Output cost map (reads TSDF, writes ESDF)
+    if (const rclcpp::Time now = this->get_clock()->now();
+      shouldProcess(now, update_esdf_last_time_, params_.update_esdf_rate_hz))
+    {
+      std::shared_lock<std::shared_mutex> lock(tsdf_rw_mutex_);
+      processEsdf();
+      update_esdf_last_time_ = now;
+    }
+
+    // Visualization (reads layers)
+    if (const rclcpp::Time now = this->get_clock()->now();
+      shouldProcess(now, publish_layer_last_time_, params_.publish_layer_rate_hz))
+    {
+      std::shared_lock<std::shared_mutex> lock(tsdf_rw_mutex_);
+      publishLayers();
+      publish_layer_last_time_ = now;
+    }
+
+    if (const rclcpp::Time now = this->get_clock()->now();
+      shouldProcess(now, publish_debug_vis_last_time_, params_.publish_debug_vis_rate_hz))
+    {
+      std::shared_lock<std::shared_mutex> lock(tsdf_rw_mutex_);
+      publishDebugVisualizations();
+      publish_debug_vis_last_time_ = now;
+    }
+  }
+
+  RCLCPP_INFO(get_logger(), "Output thread stopped");
 }
 
 bool NvbloxNode::shouldProcess(
@@ -653,86 +891,13 @@ void NvbloxNode::tick()
   timing::Timer tick_timer("ros/tick");
   timing::Rates::tick("ros/tick");
 
-  // Process service calls (may modify TSDF: clearTsdfInsideShapes, loadMap)
-  {
-    std::unique_lock<std::shared_mutex> lock(tsdf_rw_mutex_);
-    processServiceRequestTaskQueue();
-  }
+  // All heavy processing has been moved to dedicated worker threads:
+  // - integrationThreadFunc(): depth/color/pointcloud queues
+  // - maintenanceThreadFunc(): decay, map clearing
+  // - outputThreadFunc(): ESDF, layer publishing, debug vis
+  // - heightScanThreadFunc(): height scan at 50Hz
 
-  // Process sensor data (modifies TSDF/Occupancy layers)
-  // NOTE: We process these queues every time, checking if we can process (or discard) messages
-  // in the queue. Dropping messages in order to not exceed integration rates is handled inside
-  // the processQueue functions.
-  {
-    std::unique_lock<std::shared_mutex> lock(tsdf_rw_mutex_);
-    if (params_.use_depth) {
-      processDepthQueue();
-    }
-    if (params_.use_color) {
-      processColorQueue();
-    }
-    if (params_.use_lidar) {
-      processPointcloudQueue();
-    }
-  }
-
-  // Decay
-  if (const rclcpp::Time now = this->get_clock()->now();
-    shouldProcess(now, decay_tsdf_last_time_, params_.decay_tsdf_rate_hz))
-  {
-    std::unique_lock<std::shared_mutex> lock(tsdf_rw_mutex_);
-    decayTsdf();
-    decay_tsdf_last_time_ = now;
-  }
-  if (const rclcpp::Time now = this->get_clock()->now();
-    (isUsingHumanOrDynamicMapper(params_.mapping_type)) &&
-    shouldProcess(
-      now, decay_dynamic_occupancy_last_time_,
-      params_.decay_dynamic_occupancy_rate_hz))
-  {
-    std::unique_lock<std::shared_mutex> lock(tsdf_rw_mutex_);
-    decayDynamicOccupancy();
-    decay_dynamic_occupancy_last_time_ = now;
-  }
-
-  // Mapping
-  if (const rclcpp::Time now = this->get_clock()->now(); shouldProcess(
-      now, clear_map_outside_radius_last_time_, params_.clear_map_outside_radius_rate_hz))
-  {
-    std::unique_lock<std::shared_mutex> lock(tsdf_rw_mutex_);
-    clearMapOutsideOfRadiusOfLastKnownPose();
-    clear_map_outside_radius_last_time_ = now;
-  }
-
-  // Height scan now runs in dedicated heightScanThreadFunc(), not in tick()
-
-  // Output cost map (reads TSDF, writes ESDF)
-  if (const rclcpp::Time now = this->get_clock()->now();
-    shouldProcess(now, update_esdf_last_time_, params_.update_esdf_rate_hz))
-  {
-    std::shared_lock<std::shared_mutex> lock(tsdf_rw_mutex_);
-    processEsdf();
-    update_esdf_last_time_ = now;
-  }
-
-  // Visualization (reads layers)
-  if (const rclcpp::Time now = this->get_clock()->now();
-    shouldProcess(now, publish_layer_last_time_, params_.publish_layer_rate_hz))
-  {
-    std::shared_lock<std::shared_mutex> lock(tsdf_rw_mutex_);
-    publishLayers();
-    publish_layer_last_time_ = now;
-  }
-
-  if (const rclcpp::Time now = this->get_clock()->now();
-    shouldProcess(now, publish_debug_vis_last_time_, params_.publish_debug_vis_rate_hz))
-  {
-    std::shared_lock<std::shared_mutex> lock(tsdf_rw_mutex_);
-    publishDebugVisualizations();
-    publish_debug_vis_last_time_ = now;
-  }
-
-  // nvblox statistics
+  // Only print statistics in tick (lightweight)
   auto & clk = *get_clock();
   if (params_.print_timings_to_console) {
     RCLCPP_INFO_STREAM_THROTTLE(
@@ -1702,6 +1867,7 @@ void NvbloxNode::savePly(
   pushOntoQueue(
     kFilePathServiceQueueName, task, file_path_service_queue_,
     &esdf_service_queue_mutex_);
+  integration_cv_.notify_all();
   task->waitForTaskCompletion();
 }
 
@@ -1737,6 +1903,7 @@ void NvbloxNode::saveMap(
   pushOntoQueue(
     kFilePathServiceQueueName, task, file_path_service_queue_,
     &esdf_service_queue_mutex_);
+  integration_cv_.notify_all();
   task->waitForTaskCompletion();
 }
 
@@ -1772,6 +1939,7 @@ void NvbloxNode::loadMap(
   pushOntoQueue(
     kFilePathServiceQueueName, task, file_path_service_queue_,
     &esdf_service_queue_mutex_);
+  integration_cv_.notify_all();
   task->waitForTaskCompletion();
 }
 
@@ -1924,7 +2092,172 @@ void NvbloxNode::getEsdfAndGradientService(
 
   // Push the task onto the queue and wait for completion.
   pushOntoQueue(kEsdfServiceQueueName, task, esdf_service_queue_, &esdf_service_queue_mutex_);
+  integration_cv_.notify_all();
   task->waitForTaskCompletion();
+}
+
+// ---- HeightScan 统计与系统资源日志实现 ----
+
+void NvbloxNode::initializeHeightScanLogger()
+{
+  // 生成带日期时间的日志文件名
+  auto now = std::chrono::system_clock::now();
+  auto time_t_now = std::chrono::system_clock::to_time_t(now);
+  std::tm tm_now{};
+  localtime_r(&time_t_now, &tm_now);
+  char datetime_str[32];
+  std::strftime(datetime_str, sizeof(datetime_str), "%Y%m%d_%H%M%S", &tm_now);
+
+  const std::string log_dir = "temp/logs";
+  const std::string log_path = log_dir + "/nvblox_heightscan_stats_" + datetime_str + ".csv";
+
+  // 创建目录（如果不存在）
+  try {
+    std::filesystem::create_directories(log_dir);
+  } catch (const std::exception& e) {
+    RCLCPP_WARN(get_logger(), "Failed to create log directory '%s': %s",
+                log_dir.c_str(), e.what());
+  }
+
+  heightscan_log_file_.open(log_path, std::ios::out | std::ios::app);
+  if (heightscan_log_file_.is_open()) {
+    heightscan_log_file_.seekp(0, std::ios::end);
+    if (heightscan_log_file_.tellp() == 0) {
+      heightscan_log_file_
+        << "timestamp_sec,mean_height,max_deviation,publish_freq_hz,"
+        << "cpu_load_percent,mem_used_mb,mem_total_mb,gpu_load_percent\n";
+      heightscan_log_file_.flush();
+    }
+    RCLCPP_INFO(get_logger(), "HeightScan stats logging to: %s", log_path.c_str());
+  } else {
+    RCLCPP_WARN(get_logger(), "Failed to open HeightScan log file: %s", log_path.c_str());
+  }
+}
+
+void NvbloxNode::logHeightScanStats(
+  const rclcpp::Time& timestamp,
+  const std::vector<float>& heights,
+  float publish_freq_hz)
+{
+  if (heights.empty()) {
+    return;
+  }
+
+  // 计算均值
+  double sum = 0.0;
+  float min_h = heights[0];
+  float max_h = heights[0];
+  for (float h : heights) {
+    sum += h;
+    if (h < min_h) { min_h = h; }
+    if (h > max_h) { max_h = h; }
+  }
+  const float mean = static_cast<float>(sum / heights.size());
+  const float max_deviation = max_h - min_h;
+
+  // 读取系统资源
+  const float cpu_load = getCpuLoadPercent();
+  const auto [mem_used_mb, mem_total_mb] = getMemUsageMB();
+  const float gpu_load = getGpuLoadPercent();
+
+  const double ts_sec = timestamp.seconds();
+
+  heightscan_log_file_
+    << std::fixed << std::setprecision(6) << ts_sec << ","
+    << std::setprecision(4) << mean << ","
+    << max_deviation << ","
+    << std::setprecision(2) << publish_freq_hz << ","
+    << std::setprecision(1) << cpu_load << ","
+    << std::setprecision(1) << mem_used_mb << ","
+    << std::setprecision(1) << mem_total_mb << ","
+    << std::setprecision(1) << gpu_load << "\n";
+  heightscan_log_file_.flush();
+}
+
+float NvbloxNode::getCpuLoadPercent()
+{
+  std::ifstream stat_file("/proc/stat");
+  if (!stat_file.is_open()) {
+    return -1.0f;
+  }
+
+  std::string line;
+  std::getline(stat_file, line);
+  stat_file.close();
+
+  unsigned long long user = 0, nice = 0, system = 0, idle = 0;
+  unsigned long long iowait = 0, irq = 0, softirq = 0, steal = 0;
+  std::istringstream iss(line);
+  std::string cpu_label;
+  iss >> cpu_label >> user >> nice >> system >> idle >> iowait >> irq >> softirq >> steal;
+
+  const unsigned long long total = user + nice + system + idle + iowait + irq + softirq + steal;
+  const unsigned long long total_idle = idle + iowait;
+
+  if (!heightscan_cpu_stat_initialized_) {
+    heightscan_last_cpu_total_ = total;
+    heightscan_last_cpu_idle_ = total_idle;
+    heightscan_cpu_stat_initialized_ = true;
+    return 0.0f;
+  }
+
+  const unsigned long long total_delta = total - heightscan_last_cpu_total_;
+  const unsigned long long idle_delta = total_idle - heightscan_last_cpu_idle_;
+  heightscan_last_cpu_total_ = total;
+  heightscan_last_cpu_idle_ = total_idle;
+
+  if (total_delta == 0) {
+    return 0.0f;
+  }
+  return 100.0f * (1.0f - static_cast<float>(idle_delta) / static_cast<float>(total_delta));
+}
+
+std::tuple<float, float> NvbloxNode::getMemUsageMB()
+{
+  std::ifstream meminfo("/proc/meminfo");
+  if (!meminfo.is_open()) {
+    return {-1.0f, -1.0f};
+  }
+
+  std::string line;
+  float mem_total_kb = -1.0f;
+  float mem_available_kb = -1.0f;
+  while (std::getline(meminfo, line)) {
+    if (line.find("MemTotal:") == 0) {
+      std::istringstream iss(line);
+      std::string label;
+      iss >> label >> mem_total_kb;
+    } else if (line.find("MemAvailable:") == 0) {
+      std::istringstream iss(line);
+      std::string label;
+      iss >> label >> mem_available_kb;
+    }
+    if (mem_total_kb >= 0 && mem_available_kb >= 0) {
+      break;
+    }
+  }
+  meminfo.close();
+
+  if (mem_total_kb < 0 || mem_available_kb < 0) {
+    return {-1.0f, -1.0f};
+  }
+
+  const float used_kb = mem_total_kb - mem_available_kb;
+  return {used_kb / 1024.0f, mem_total_kb / 1024.0f};
+}
+
+float NvbloxNode::getGpuLoadPercent()
+{
+  std::ifstream gpu_load_file("/sys/devices/platform/gpu.0/load");
+  if (!gpu_load_file.is_open()) {
+    return -1.0f;
+  }
+
+  int load_raw = 0;
+  gpu_load_file >> load_raw;
+  gpu_load_file.close();
+
+  return static_cast<float>(load_raw) / 10.0f;
 }
 
 }  // namespace nvblox

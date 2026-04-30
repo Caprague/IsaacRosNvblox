@@ -263,7 +263,11 @@ constexpr Param<float>::Description kPublishLocomotionHeightScanRateHzParamDesc{
 
 constexpr Param<float>::Description kPublishNavigationHeightScanRateHzParamDesc{
   "publish_navigation_height_scan_rate_hz", 10.F,
-  "The desired rate for publishing height scan messages - for navigation policy."};  
+  "The desired rate for publishing height scan messages - for navigation policy."};
+
+constexpr Param<bool>::Description kEnableHeightScanStatsLoggingParamDesc{
+  "enable_heightscan_stats_logging", false,
+  "Whether to enable height scan stats logging (CSV with frequency, CPU/GPU load, memory)."};  
 
 // ======= OUTPUT PARAMS =======
 constexpr Param<float>::Description kEsdfAndGradientsUnobservedValueParamDesc{
@@ -383,6 +387,7 @@ public:
 
   Param<float> publish_locomotion_height_scan_rate_hz{kPublishLocomotionHeightScanRateHzParamDesc};
   Param<float> publish_navigation_height_scan_rate_hz{kPublishNavigationHeightScanRateHzParamDesc};
+  Param<bool> enable_heightscan_stats_logging{kEnableHeightScanStatsLoggingParamDesc};
   Param<float> distance_map_local_maintenance{kDistanceMapLocalMaintenance};
 };
 
