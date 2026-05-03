@@ -42,13 +42,20 @@ def generate_launch_description():
     )
 
     # IMU水平校正节点(初始化并发布一个额外frame的TF数据)
+    # base_imu_topic: 底盘IMU话题，设置后启用双IMU自动标定camera→base旋转
+    #   需要DDS→ROS2桥接节点将Unitree rt/lowstate转为sensor_msgs/Imu
+    # camera_base_x/y/z: 相机光学中心在底盘坐标系中的位置
     imu_horizontal_align_node = Node(
         name='imu_horizontal_align_node',
         package='odom_horizontal_transform',
         executable='imu_horizontal_align',
         output='screen',
         parameters=[{
-            'start_delay': 2.5,  # 延迟启动水平校正过程
+            'start_delay': 2.5,          # 延迟启动水平校正过程
+            'base_imu_topic': '',        # 底盘IMU话题，空=禁用双IMU标定
+            'camera_base_x': 0.34,       # 相机在底盘坐标系中的X位置
+            'camera_base_y': 0.0,        # 相机在底盘坐标系中的Y位置
+            'camera_base_z': 0.09,       # 相机在底盘坐标系中的Z位置
         }]
     )
 
