@@ -130,9 +130,8 @@ public:
 
 private:
   // CPU内存管理
-  host_vector<nvblox::Vector3f> h_sample_points_;             // 采样点起始坐标
-  host_vector<nvblox::Vector3f> h_terrain_points_;            // 地形点采样点结果
-  host_vector<bool> h_point_validity_;                        // 地形点采样点有效性
+  host_vector<nvblox::Vector3f> h_terrain_points_;            // 地形点采样结果
+  host_vector<bool> h_point_validity_;                        // 地形点采样有效性
 
   // 独立非阻塞CUDA流 —— 用于光线追踪核函数和D2H传输，避免与主映射流阻塞
   CudaStreamOwning height_scan_stream_{cudaStreamNonBlocking};

@@ -10,9 +10,6 @@
 #include "nvblox/gpu_hash/gpu_layer_view.h"
 #include "nvblox/primitives/primitives.h"
 #include "nvblox/primitives/scene.h"
-#include <thrust/device_vector.h>
-#include "nvblox/gpu_hash/internal/cuda/gpu_hash_interface.cuh"
-#include "nvblox/gpu_hash/internal/cuda/gpu_indexing.cuh"
 
 #include <queue>
 #include <rclcpp/rclcpp.hpp>
@@ -21,160 +18,152 @@ namespace nvblox {
 namespace conversions {
 
 /**
- * @brief CUDA核心函数：预计算采样点全局坐标
- * @param d_sample_points 采样点坐标数组
- * @param x_steps 在x轴上的采样步数
- * @param y_steps 在y轴上的采样步数
- * @param range_x 采样范围在x轴上的长度
- * @param range_y 采样范围在y轴上的长度
- * @param resolution 采样网格的分辨率
- * @param robot_pos_x 机器人当前位置的x坐标
- * @param robot_pos_y 机器人当前位置的y坐标
- * @param robot_pos_z 机器人当前位置的z坐标
- * @param yaw_rot_00 yaw旋转矩阵的元素(0,0)
- * @param yaw_rot_01 yaw旋转矩阵的元素(0,1)
- * @param yaw_rot_10 yaw旋转矩阵的元素(1,0)
- * @param yaw_rot_11 yaw旋转矩阵的元素(1,1)
- * @param x_offset x轴上的偏移量
- * @param y_offset y轴上的偏移量
- * @param z_offset z轴上的偏移量
+ * @brief 合并核函数：计算采样点坐标 + DDA体素步进光线投射 + 子体素线性插值
+ *
+ * 改进点：
+ * 1. 合并原 computeSamplePointsKernel 与 rayCastingVoxelsOnGPU，消除中间全局内存读写
+ * 2. 按体素索引逐层步进（z-1），仅在跨越 block 边界时查询 hash map，缓存 block 指针
+ * 3. 利用 TSDF distance 符号变化做线性插值，子体素精度定位表面（替代手动微调）
  */
-__global__ void computeSamplePointsKernel(
-  Vector3f* d_sample_points,
-  const int x_steps, 
-  const int y_steps,
-  const float range_x,
-  const float range_y,
-  const float resolution,
-  const float robot_pos_x,
-  const float robot_pos_y,
-  const float robot_pos_z,
-  const float yaw_rot_00, const float yaw_rot_01,  // yaw旋转矩阵元素
-  const float yaw_rot_10, const float yaw_rot_11,
-  const float x_offset,
-  const float y_offset,
-  const float z_offset)
-{
-  // 计算全局线程索引
-  int idx = blockIdx.x * blockDim.x + threadIdx.x;
-  
-  if (idx >= x_steps * y_steps) return;
-  
-  // 计算对应的i,j坐标
-  int i = idx / x_steps;
-  int j = idx % x_steps;
-  
-  // 计算相对坐标
-  float rel_x = -range_x / 2 + j * resolution;
-  float rel_y = -range_y / 2 + i * resolution;
-  
-  // 应用偏移和旋转
-  float local_x = rel_x + x_offset;
-  float local_y = rel_y + y_offset;
-  
-  // 旋转并添加机器人位置
-  float global_x = robot_pos_x + yaw_rot_00 * local_x + yaw_rot_01 * local_y;
-  float global_y = robot_pos_y + yaw_rot_10 * local_x + yaw_rot_11 * local_y;
-  float global_z = robot_pos_z + z_offset;
-  
-  // 存储结果
-  d_sample_points[idx] = nvblox::Vector3f(global_x, global_y, global_z);
-}
-
-// Cuda 核函数，批量光追采样地形体素，同时输出是否成功采样到体素
-// 修改说明：将getVoxelsInLayerKernel的功能内联到光追采样循环中，避免嵌套启动内核。
-// @param gpu_layer 输入的体素层
-// @param sample_points 输入的采样点数组
-// @param point_validity 输出的标志数组，指示是否成功采样到体素
-// @param max_distance 最大光追采样距离
-// @param occupied_threshold 体素栅格占据阈值
-// @param block_size 体素块的大小
-// @param voxel_size 体素栅格大小
-// @param num_points 输入的采样点数量
-__global__ void rayCastingVoxelsOnGPU(
-  Index3DDeviceHashMapType<TsdfBlock> block_hash,
-  Vector3f* d_sample_points,
-  Vector3f* d_terrain_points,
-  bool* d_point_validity,
-  const float confidence_weight_threshold,
-  const float block_size,
-  const float voxel_size,
-  const int num_points,
-  const float max_distance) 
+__global__ void sampleTerrainKernel(
+    Index3DDeviceHashMapType<TsdfBlock> block_hash,
+    Vector3f* d_terrain_points,
+    bool* d_point_validity,
+    const float confidence_weight_threshold,
+    const float block_size,
+    const int num_points,
+    const float max_distance,
+    const int x_steps,
+    const int y_steps,
+    const float range_x,
+    const float range_y,
+    const float resolution,
+    const float robot_pos_x,
+    const float robot_pos_y,
+    const float robot_pos_z,
+    const float yaw_rot_00,
+    const float yaw_rot_01,
+    const float yaw_rot_10,
+    const float yaw_rot_11,
+    const float x_offset,
+    const float y_offset,
+    const float z_offset)
 {
   const int idx = threadIdx.x + blockIdx.x * blockDim.x;
   if (idx >= num_points) {
     return;
   }
 
-  // 计算单点的光追采样起始点和终止点
-  nvblox::Vector3f beg_position = d_sample_points[idx];
-  nvblox::Vector3f end_position = d_sample_points[idx];
+  // ---- 1. 合并：计算采样点坐标 ----
+  const int i = idx / x_steps;
+  const int j = idx % x_steps;
+
+  const float rel_x = -range_x * 0.5f + j * resolution;
+  const float rel_y = -range_y * 0.5f + i * resolution;
+  const float local_x = rel_x + x_offset;
+  const float local_y = rel_y + y_offset;
+
+  const float global_x = robot_pos_x + yaw_rot_00 * local_x + yaw_rot_01 * local_y;
+  const float global_y = robot_pos_y + yaw_rot_10 * local_x + yaw_rot_11 * local_y;
+  const float global_z = robot_pos_z + z_offset;
+
+  const Vector3f beg_position(global_x, global_y, global_z);
+
+  // ---- 2. DDA式体素步进（垂直向下） ----
+  Vector3f end_position = beg_position;
   end_position.z() = beg_position.z() - max_distance;
 
-  // 在单采样点位置，按体素大小生成序列子采样点
-  int kNumPoints = static_cast<int>(max_distance / voxel_size) + 1;
+  Index3D beg_block_idx, beg_voxel_idx;
+  Index3D end_block_idx, end_voxel_idx;
+  getBlockAndVoxelIndexFromPositionInLayer(block_size, beg_position,
+                                           &beg_block_idx, &beg_voxel_idx);
+  getBlockAndVoxelIndexFromPositionInLayer(block_size, end_position,
+                                           &end_block_idx, &end_voxel_idx);
 
-  // 关键修改1：移除原有的设备向量声明和嵌套内核启动
-  // 改为直接在循环内进行体素查询操作
+  // z方向总步数（体素级别，包含两端）
+  constexpr int kVoxelsPerSide = TsdfBlock::kVoxelsPerSide;
+  int z_steps = (beg_block_idx.z() - end_block_idx.z()) * kVoxelsPerSide
+              + (beg_voxel_idx.z() - end_voxel_idx.z());
+  if (z_steps < 0) {
+    z_steps = 0;
+  }
 
-  // 检查是否有体素被成功采样到
+  // 缓存当前 block 指针，仅在 block_idx 变化时查询 hash map
+  TsdfBlock* cached_block = nullptr;
+  Index3D cached_block_idx(-1, -1, -1);
+
+  // 记录上一个 distance > 0 的体素，用于子体素插值
+  bool found_positive = false;
+  float last_positive_distance = 0.0f;
+  Vector3f last_positive_position;
+
   bool has_valid_voxel = false;
-  nvblox::Vector3f valid_terrain_point;
+  Vector3f valid_terrain_point;
 
-  for (int i = 0; i < kNumPoints; ++i)
-  {
-    // 计算当前采样点的位置
-    nvblox::Vector3f current_position = beg_position + (end_position - beg_position) * (i / static_cast<float>(kNumPoints - 1));
+  Index3D block_idx = beg_block_idx;
+  Index3D voxel_idx = beg_voxel_idx;
 
-    // 关键修改2：内联第一个核函数的逻辑
-    // 直接查询当前采样点位置的体素
-    TsdfVoxel* voxel_ptr = nullptr;
-    // 假设 getVoxelAtPosition 函数可在设备端调用
-    const bool flag = getVoxelAtPosition(block_hash, current_position, block_size, &voxel_ptr);
+  for (int step = 0; step <= z_steps; ++step) {
+    // block 变化时更新缓存
+    if (cached_block == nullptr || block_idx != cached_block_idx) {
+      auto it = block_hash.find(block_idx);
+      if (it != block_hash.end()) {
+        cached_block = it->second;
+        cached_block_idx = block_idx;
+      } else {
+        cached_block = nullptr;
+      }
+    }
 
-    // 如果成功获取体素且其占据概率超过阈值，则记录该点
-    if (flag && voxel_ptr != nullptr && voxel_ptr->distance < 0.0f && voxel_ptr->weight > confidence_weight_threshold) {
-      has_valid_voxel = true;
-      valid_terrain_point = current_position; // 记录当前有效的 terrain point
+    if (cached_block != nullptr) {
+      const TsdfVoxel& voxel =
+          cached_block->voxels[voxel_idx.x()][voxel_idx.y()][voxel_idx.z()];
 
-      // 二次调整：尝试反向移动采样点，获取更精确的 terrain point
-      // 定义精细采样的步长（单位：体素）
-      const float fine_steps[] = {0.5f, 0.25f, 0.125f};
-      const int num_fine_steps = sizeof(fine_steps) / sizeof(fine_steps[0]);
-      // 向上精细采样
-      for (int step_idx = 0; step_idx < num_fine_steps; ++step_idx) {
-        // 计算微调后的位置（向上移动）
-        nvblox::Vector3f fine_position = nvblox::Vector3f(valid_terrain_point.x(), 
-                                                          valid_terrain_point.y(), 
-                                                          valid_terrain_point.z() + fine_steps[step_idx] * voxel_size);
-        
-        // 检查微调后的位置
-        TsdfVoxel* fine_voxel_ptr = nullptr;
-        const bool fine_flag = getVoxelAtPosition(block_hash, fine_position, block_size, &fine_voxel_ptr);
-        
-        // 如果微调后的位置也有效，更新最精确的点
-        if (fine_flag && fine_voxel_ptr != nullptr && fine_voxel_ptr->distance < 0.0f && fine_voxel_ptr->weight > confidence_weight_threshold) {
-          valid_terrain_point = fine_position;
+      if (voxel.weight > confidence_weight_threshold) {
+        const Vector3f current_pos =
+            getCenterPositionFromBlockIndexAndVoxelIndex(block_size, block_idx,
+                                                         voxel_idx);
+
+        if (voxel.distance > 0.0f) {
+          // 记录正距离体素
+          found_positive = true;
+          last_positive_distance = voxel.distance;
+          last_positive_position = current_pos;
         } else {
-          // 如果微调后的位置无效，尝试更小的步长
-          continue;
+          // 找到 occupied 体素 (distance <= 0)
+          if (found_positive) {
+            // 子体素线性插值：在 last_positive (dist>0) 与 current (dist<0) 之间
+            const float dist_above = last_positive_distance;
+            const float dist_below = fabsf(voxel.distance);
+            const float t = dist_above / (dist_above + dist_below);
+            const float z_cross =
+                last_positive_position.z() +
+                t * (current_pos.z() - last_positive_position.z());
+            valid_terrain_point =
+                Vector3f(current_pos.x(), current_pos.y(), z_cross);
+          } else {
+            // 未遇到 positive 体素即进入 negative，直接返回当前体素中心
+            valid_terrain_point = current_pos;
+          }
+          has_valid_voxel = true;
+          break;
         }
       }
+    }
 
-      break; // 找到一个有效体素即可退出当前点的循环
+    // 步进到下一个 voxel（z - 1 方向）
+    voxel_idx.z()--;
+    if (voxel_idx.z() < 0) {
+      voxel_idx.z() = kVoxelsPerSide - 1;
+      block_idx.z()--;
     }
   }
 
-  // 关键修改3：根据循环结果设置输出
   d_point_validity[idx] = has_valid_voxel;
-  if (has_valid_voxel) 
-  {
+  if (has_valid_voxel) {
     d_terrain_points[idx] = valid_terrain_point;
-  }
-  else 
-  {
-    d_terrain_points[idx] = nvblox::Vector3f(beg_position.x(), beg_position.y(), 0);
+  } else {
+    d_terrain_points[idx] = Vector3f(beg_position.x(), beg_position.y(), 0.0f);
   }
 }
 
@@ -366,68 +355,52 @@ bool CudaVerticalRayCaster::sampleTerrainPoints(
   // 此步骤在主CUDA流上执行，确保GPU哈希表与最新TSDF层数据同步
   // getGpuLayerView内部会调用synchronize()，因此返回时哈希已是最新
   const GPULayerView<TsdfBlock>& gpu_layer_view = tsdf_layer.getGpuLayerView(cuda_stream);
-  
+
   // GPU Output space
-  device_vector<Vector3f> d_sample_points_(total_points_);
-  device_vector<Vector3f> d_terrain_points_(total_points_);  
+  device_vector<Vector3f> d_terrain_points_(total_points_);
   device_vector<bool> d_point_validity_(total_points_);
   // 使用独立非阻塞流初始化设备内存，避免与主映射流阻塞
-  d_sample_points_.setZeroAsync(height_scan_stream_);
   d_terrain_points_.setZeroAsync(height_scan_stream_);
   d_point_validity_.setZeroAsync(height_scan_stream_);
-  
+
   // 配置CUDA内核参数
   const int threads_per_block = 256;
   const int num_blocks_needed = (total_points_ + threads_per_block - 1) / threads_per_block;
-  
-  // 启动CUDA内核 - 计算采样点
+
+  // 启动合并CUDA内核：计算采样点 + DDA步进 + 子体素插值
   // 在独立非阻塞流上执行，不与主映射流(integrateDepth/updateEsdf)阻塞
-  computeSamplePointsKernel<<<num_blocks_needed, threads_per_block, 0, height_scan_stream_>>>(
-    d_sample_points_.data(),
-    x_steps,
-    y_steps,
-    range_x,
-    range_y,
-    grid_resolution,
-    robot_position.x(),
-    robot_position.y(),
-    robot_position.z(),
-    yaw_rot_00, yaw_rot_01,
-    yaw_rot_10, yaw_rot_11,
-    x_offset,
-    y_offset,
-    z_offset);
-  
-  cudaError_t err1 = cudaPeekAtLastError();
-  if (err1 != cudaSuccess) {
-    RCLCPP_ERROR(rclcpp::get_logger("CudaVerticalRayCaster"), 
-                 "computeSamplePointsKernel failed: %s", cudaGetErrorString(err1));
+  sampleTerrainKernel<<<num_blocks_needed, threads_per_block, 0, height_scan_stream_>>>(
+      gpu_layer_view.getHash().impl_,
+      d_terrain_points_.data(),
+      d_point_validity_.data(),
+      confidence_weight_threshold_,
+      block_size_,
+      total_points_,
+      max_distance_,
+      x_steps,
+      y_steps,
+      range_x,
+      range_y,
+      grid_resolution,
+      robot_position.x(),
+      robot_position.y(),
+      robot_position.z(),
+      yaw_rot_00,
+      yaw_rot_01,
+      yaw_rot_10,
+      yaw_rot_11,
+      x_offset,
+      y_offset,
+      z_offset);
+
+  cudaError_t err = cudaPeekAtLastError();
+  if (err != cudaSuccess) {
+    RCLCPP_ERROR(rclcpp::get_logger("CudaVerticalRayCaster"),
+                 "sampleTerrainKernel failed: %s", cudaGetErrorString(err));
     return false;
   }
-  
-  // 启动CUDA内核 - 光线投射采样
-  // 在独立非阻塞流上执行，不与主映射流阻塞
-  rayCastingVoxelsOnGPU<<<num_blocks_needed, threads_per_block, 0, height_scan_stream_>>>(
-    gpu_layer_view.getHash().impl_,
-    d_sample_points_.data(),
-    d_terrain_points_.data(),
-    d_point_validity_.data(),
-    confidence_weight_threshold_,
-    block_size_,
-    voxel_size_,
-    total_points_,
-    max_distance_
-  );
-  
-  cudaError_t err2 = cudaPeekAtLastError();
-  if (err2 != cudaSuccess) {
-    RCLCPP_ERROR(rclcpp::get_logger("CudaVerticalRayCaster"), 
-                 "rayCastingVoxelsOnGPU failed: %s", cudaGetErrorString(err2));
-    return false;
-  }
-  
+
   // GPU -> CPU 数据传输（在独立流上异步执行）
-  h_sample_points_.copyFromAsync(d_sample_points_, height_scan_stream_);
   h_terrain_points_.copyFromAsync(d_terrain_points_, height_scan_stream_);
   h_point_validity_.copyFromAsync(d_point_validity_, height_scan_stream_);
   

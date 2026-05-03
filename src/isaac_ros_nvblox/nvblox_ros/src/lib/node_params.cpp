@@ -164,6 +164,7 @@ void initializeNvbloxNodeParams(
 
   initParam<float>(node, &params->publish_locomotion_height_scan_rate_hz, parameter_tree);
   initParam<float>(node, &params->publish_navigation_height_scan_rate_hz, parameter_tree);
+  initParam<bool>(node, &params->enable_heightscan_stats_logging, parameter_tree);
   initParam<float>(node, &params->distance_map_local_maintenance, parameter_tree);
 }
 
