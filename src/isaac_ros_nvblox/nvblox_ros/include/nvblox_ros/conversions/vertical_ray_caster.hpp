@@ -92,15 +92,16 @@ public:
   void setConfidenceWeightThreshold(float threshold);
 
   /**
-   * @brief 填充无效高程点
-   * @param elevation_map 高程地图容器
-   * @param valid_mask 有效性掩码容器
-   * @param x_steps 在x轴上的采样步数
-   * @param y_steps 在y轴上的采样步数
+   * @brief GPU加速填充无效高程点（IDW插值 + 迭代传播）
+   * @param d_terrain_points GPU端地形点（z值被原地修改）
+   * @param d_point_validity GPU端有效性掩码（原地更新）
+   * @param x_steps x轴采样步数
+   * @param y_steps y轴采样步数
    */
-  void fillInvalidElevationPoints(std::vector<float>& elevation_map, 
-                            const host_vector<bool>& valid_mask,
-                            int x_steps, int y_steps);
+  void fillInvalidElevationGPU(
+      device_vector<Vector3f>& d_terrain_points,
+      device_vector<bool>& d_point_validity,
+      int x_steps, int y_steps);
 
   /**
    * @brief 初始化地平面体素栅格
@@ -139,9 +140,18 @@ private:
   // 配置参数
   float confidence_weight_threshold_ = 0.0f;                  // 体素栅格占据的置信权重阈值
   float block_size_ = 0.0f;                                   // 块大小
-  float voxel_size_ = 0.0f;                                   // 体素栅格大小
   int total_points_ = 0;                                      // 采样点数量
   float max_distance_ = 0.0f;                                 // 最大光追采样距离
+
+  // Block指针预取网格（借鉴tsdf_zero_crossings_extractor批量提取优化）
+  static constexpr int kMaxGridTotal = 4096;                   // 网格安全上限
+  std::vector<const TsdfBlock*> h_block_ptr_grid_;             // CPU暂存缓冲区（跨帧复用）
+  device_vector<const TsdfBlock*> d_block_ptr_grid_;           // GPU网格（跨帧复用）
+  Index3D grid_dims_;                                          // 当前网格维度
+
+  // GPU无效高程点填充双缓冲
+  device_vector<bool> d_valid_buf_;                            // 有效性掩码双缓冲
+  device_vector<Vector3f> d_smooth_buf_;                       // 平滑双缓冲
 
   // 地平面初始化参数
   int sample_count_ = 0;                                      // 采样计数器
