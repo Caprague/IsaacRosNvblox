@@ -158,6 +158,12 @@ class CudaStreamOwning : public CudaStreamAsync {
   /// @param flags  Stream creation flags from cuda_runtime.h
   CudaStreamOwning(const unsigned int flags = cudaStreamDefault);
 
+  /// Creates the stream with a specific priority.
+  ///
+  /// @param flags  Stream creation flags from cuda_runtime.h
+  /// @param priority Stream priority (lower value = higher priority)
+  CudaStreamOwning(const unsigned int flags, int priority);
+
   virtual ~CudaStreamOwning();
 
   // Can't copy owning streams (because both copies would want ownership)

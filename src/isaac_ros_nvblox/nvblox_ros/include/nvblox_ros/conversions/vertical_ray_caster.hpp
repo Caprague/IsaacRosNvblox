@@ -135,7 +135,8 @@ private:
   host_vector<bool> h_point_validity_;                        // 地形点采样有效性
 
   // 独立非阻塞CUDA流 —— 用于光线追踪核函数和D2H传输，避免与主映射流阻塞
-  CudaStreamOwning height_scan_stream_{cudaStreamNonBlocking};
+  // 使用高优先级 (-1) 让 height scan 核函数在 GPU 队列中优先于 integration 执行
+  CudaStreamOwning height_scan_stream_{cudaStreamNonBlocking, -1};
 
   // 配置参数
   float confidence_weight_threshold_ = 0.0f;                  // 体素栅格占据的置信权重阈值

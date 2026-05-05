@@ -36,6 +36,11 @@ CudaStreamOwning::CudaStreamOwning(const unsigned int flags)
   checkCudaErrors(cudaStreamCreateWithFlags(&stream_, flags));
 }
 
+CudaStreamOwning::CudaStreamOwning(const unsigned int flags, int priority)
+    : CudaStreamAsync(&stream_) {
+  checkCudaErrors(cudaStreamCreateWithPriority(&stream_, flags, priority));
+}
+
 void DefaultStream::synchronize() const {
   checkCudaErrors(cudaStreamSynchronize(default_stream_));
 }

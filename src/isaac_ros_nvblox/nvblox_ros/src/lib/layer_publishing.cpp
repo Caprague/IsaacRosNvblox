@@ -612,6 +612,43 @@ void LayerPublisher::publishLocomotionHeightScan(
   }
 }
 
+void LayerPublisher::publishCachedLocomotionHeightScan(
+  const std::vector<float>& height_data,
+  const std::string& frame_id,
+  const rclcpp::Time& timestamp)
+{
+  if (!locomotion_hs_publisher_ || locomotion_hs_publisher_->get_subscription_count() == 0) {
+    return;
+  }
+
+  // Locomotion grid dimensions (must match publishLocomotionHeightScan_impl)
+  constexpr int kXSteps = 17;
+  constexpr int kYSteps = 11;
+
+  if (static_cast<int>(height_data.size()) != kXSteps * kYSteps) {
+    RCLCPP_WARN(rclcpp::get_logger("LayerPublisher"),
+                "Cached height data size %zu does not match expected grid size %d",
+                height_data.size(), kXSteps * kYSteps);
+    return;
+  }
+
+  std_msgs::msg::Float32MultiArray msg;
+  msg.layout.dim.clear();
+  auto dim_x = std_msgs::msg::MultiArrayDimension();
+  dim_x.label = "x";
+  dim_x.size = kXSteps;
+  dim_x.stride = kXSteps * kYSteps;
+  msg.layout.dim.push_back(dim_x);
+  auto dim_y = std_msgs::msg::MultiArrayDimension();
+  dim_y.label = "y";
+  dim_y.size = kYSteps;
+  dim_y.stride = kYSteps;
+  msg.layout.dim.push_back(dim_y);
+  msg.data = height_data;
+  msg.layout.data_offset = 0;
+  locomotion_hs_publisher_->publish(msg);
+}
+
 void LayerPublisher::publishNavigationHeightScan(
   const Transform& T_L_C, const std::string& frame_id, rclcpp::Time timestamp,
   const float layer_streamer_bandwidth_limit_mbps,

@@ -76,6 +76,15 @@ public:
     const CudaStream& cuda_stream,
     std::vector<float>* height_data_out = nullptr);
 
+  /// Publish a cached/compensated locomotion height scan when TSDF lock is contended.
+  /// @param height_data Compensated robot-relative height values
+  /// @param frame_id Frame id for the published message
+  /// @param timestamp Timestamp for the published message
+  void publishCachedLocomotionHeightScan(
+    const std::vector<float>& height_data,
+    const std::string& frame_id,
+    const rclcpp::Time& timestamp);
+
   /// Serialize and publish mesh layer and height scan data, when any have active subscribers
   ///
   /// @param T_L_C Transformation used for radial exclusion

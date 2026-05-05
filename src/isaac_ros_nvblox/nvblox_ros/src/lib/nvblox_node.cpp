@@ -24,6 +24,7 @@
 #include <nvblox/utils/rates.h>
 
 #include <chrono>
+#include <cmath>
 #include <filesystem>
 #include <fstream>
 #include <iomanip>
@@ -621,6 +622,79 @@ void NvbloxNode::pointcloudCallback(
   integration_cv_.notify_all();
 }
 
+namespace {
+
+// 对缓存的高度图进行位姿补偿双线性插值
+// cached_pose: 上一帧的 T_L_C (layer -> robot)
+// current_pose: 当前帧的 T_L_C
+// 返回补偿后的高度数据（与缓存数据同尺寸）
+std::vector<float> compensateHeightScan(
+  const std::vector<float>& cached_data,
+  const nvblox::Transform& cached_pose,
+  const nvblox::Transform& current_pose,
+  int x_steps, int y_steps,
+  float range_x, float range_y,
+  float resolution, float x_offset, float y_offset)
+{
+  const int total = x_steps * y_steps;
+  std::vector<float> compensated(total, 0.0f);
+
+  // dT = cached_pose^{-1} * current_pose
+  // 当前局部坐标 p_curr 对应的上一帧局部坐标: p_prev = dT * p_curr
+  const nvblox::Transform dT = cached_pose.inverse() * current_pose;
+
+  // 计算有效值的均值，用于越界回退
+  float mean_val = 0.0f;
+  int valid_count = 0;
+  for (float v : cached_data) {
+    if (std::isfinite(v)) {
+      mean_val += v;
+      ++valid_count;
+    }
+  }
+  mean_val = valid_count > 0 ? mean_val / valid_count : 0.0f;
+
+  for (int i = 0; i < y_steps; ++i) {
+    for (int j = 0; j < x_steps; ++j) {
+      const float lx = -range_x * 0.5f + j * resolution + x_offset;
+      const float ly = -range_y * 0.5f + i * resolution + y_offset;
+      const Eigen::Vector3f p_curr_local(lx, ly, 0.0f);
+      const Eigen::Vector3f p_prev_local = dT * p_curr_local;
+
+      // 映射回上一帧的网格索引（浮点）
+      const float jf = (p_prev_local.x() - (-range_x * 0.5f + x_offset)) / resolution;
+      const float fi = (p_prev_local.y() - (-range_y * 0.5f + y_offset)) / resolution;
+
+      const int j0 = static_cast<int>(std::floor(jf));
+      const int j1 = j0 + 1;
+      const int i0 = static_cast<int>(std::floor(fi));
+      const int i1 = i0 + 1;
+
+      const float wj = jf - static_cast<float>(j0);
+      const float wi = fi - static_cast<float>(i0);
+
+      if (j0 < 0 || j1 >= x_steps || i0 < 0 || i1 >= y_steps) {
+        compensated[i * x_steps + j] = mean_val;
+        continue;
+      }
+
+      const float h00 = cached_data[i0 * x_steps + j0];
+      const float h01 = cached_data[i0 * x_steps + j1];
+      const float h10 = cached_data[i1 * x_steps + j0];
+      const float h11 = cached_data[i1 * x_steps + j1];
+
+      const float val = (1.0f - wi) * (1.0f - wj) * h00
+                      + (1.0f - wi) * wj        * h01
+                      + wi        * (1.0f - wj) * h10
+                      + wi        * wj        * h11;
+      compensated[i * x_steps + j] = val;
+    }
+  }
+  return compensated;
+}
+
+}  // namespace
+
 void NvbloxNode::heightScanThreadFunc()
 {
   const double height_scan_period_sec = 1.0 / params_.publish_locomotion_height_scan_rate_hz.get();
@@ -656,7 +730,7 @@ void NvbloxNode::heightScanThreadFunc()
       // Try to acquire shared_lock with short retries instead of blocking.
       // This prevents long blocking (when integration holds unique_lock) from
       // causing low-frequency anomalies followed by catch-up high-frequency bursts.
-      constexpr int kMaxRetries = 3;
+      constexpr int kMaxRetries = 2;
       constexpr auto kRetryInterval = std::chrono::milliseconds(2);
       std::shared_lock<std::shared_mutex> lock(tsdf_rw_mutex_, std::defer_lock);
       bool lock_acquired = false;
@@ -669,8 +743,30 @@ void NvbloxNode::heightScanThreadFunc()
       }
 
       if (!lock_acquired) {
-        // Skip this cycle — better to miss one sample than block for 20-40ms
-        // and produce a low-high frequency anomaly pair
+        // 尝试使用缓存的位姿补偿数据发布，避免 locomotion 控制器丢数据
+        {
+          std::lock_guard<std::mutex> cache_lock(height_scan_cache_mutex_);
+          if (has_cached_height_scan_) {
+            constexpr int kXSteps = 17;
+            constexpr int kYSteps = 11;
+            constexpr float kRangeX = 1.6f;
+            constexpr float kRangeY = 1.0f;
+            constexpr float kResolution = 0.1f;
+            constexpr float kXOffset = 0.0f;
+            constexpr float kYOffset = 0.0f;
+
+            auto compensated = compensateHeightScan(
+              cached_height_scan_data_, cached_height_scan_pose_, T_L_C,
+              kXSteps, kYSteps, kRangeX, kRangeY, kResolution, kXOffset, kYOffset);
+
+            layer_publisher_->publishCachedLocomotionHeightScan(
+              compensated, params_.global_frame.get(), get_clock()->now());
+
+            RCLCPP_WARN_THROTTLE(
+              get_logger(), *get_clock(), 1000,
+              "Height scan lock failed; published pose-compensated cache.");
+          }
+        }
         std::this_thread::sleep_until(next_wake_time);
         next_wake_time += period;
         continue;
@@ -704,6 +800,14 @@ void NvbloxNode::heightScanThreadFunc()
 
       if (heightscan_log_file_.is_open()) {
         logHeightScanStats(timestamp, height_data, publish_freq_hz);
+      }
+
+      // 更新缓存，用于锁竞争时的位姿补偿回退
+      {
+        std::lock_guard<std::mutex> cache_lock(height_scan_cache_mutex_);
+        cached_height_scan_data_ = height_data;
+        cached_height_scan_pose_ = T_L_C;
+        has_cached_height_scan_ = true;
       }
     }
 

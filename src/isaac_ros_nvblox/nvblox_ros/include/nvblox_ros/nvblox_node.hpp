@@ -490,6 +490,12 @@ protected:
   rclcpp::Time heightscan_last_publish_time_ = rclcpp::Time(0, 0, RCL_ROS_TIME);
   bool heightscan_first_publish_ = true;
 
+  // ---- HeightScan 缓存（锁竞争时的位姿补偿回退） ----
+  std::vector<float> cached_height_scan_data_;
+  Transform cached_height_scan_pose_{Transform::Identity()};
+  bool has_cached_height_scan_ = false;
+  std::mutex height_scan_cache_mutex_;
+
   // CPU 统计缓存
   unsigned long long heightscan_last_cpu_total_ = 0;
   unsigned long long heightscan_last_cpu_idle_ = 0;
