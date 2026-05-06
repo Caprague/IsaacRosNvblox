@@ -5,7 +5,8 @@
       "Bash(echo:*)",
       "Bash(git branch:*)",
       "Bash(git checkout:*)",
-      "Bash(git diff:*)"
+      "Bash(git diff:*)",
+      "Bash(git diff HEAD -- src/isaac_ros_nvblox/nvblox_ros/src/lib/layer_publishing.cpp | head -n 50)"
     ]
   }
 }

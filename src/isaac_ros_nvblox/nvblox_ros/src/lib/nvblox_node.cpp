@@ -91,6 +91,13 @@ NvbloxNode::NvbloxNode(
     params_.layer_visualization_min_tsdf_weight,
     params_.layer_visualization_exclusion_height_m,
     params_.layer_visualization_exclusion_radius_m,
+    params_.locomotion_height_scan_range_x.get(),
+    params_.locomotion_height_scan_range_y.get(),
+    params_.locomotion_height_scan_resolution.get(),
+    params_.locomotion_height_scan_x_offset.get(),
+    params_.locomotion_height_scan_y_offset.get(),
+    params_.locomotion_height_scan_z_offset.get(),
+    params_.locomotion_height_scan_max_casting_depth.get(),
     this);
 
   RCLCPP_INFO_STREAM(
@@ -109,9 +116,13 @@ NvbloxNode::NvbloxNode(
   // Initialize the MultiMapper with the underlying dynamic/static mappers.
   initializeMultiMapper();
 
-  // Start the dedicated height scan thread (runs at stable 50Hz, decoupled from tick)
-  height_scan_running_ = true;
-  height_scan_thread_ = std::thread(&NvbloxNode::heightScanThreadFunc, this);
+  // Start the dedicated terrain cache thread (low-freq large-area sampling, needs TSDF lock)
+  terrain_cache_running_ = true;
+  terrain_cache_thread_ = std::thread(&NvbloxNode::terrainCacheThreadFunc, this);
+
+  // Start the dedicated height scan query thread (high-freq local query, pure CPU interpolation)
+  height_scan_query_running_ = true;
+  height_scan_query_thread_ = std::thread(&NvbloxNode::heightScanQueryThreadFunc, this);
 
   // Start the dedicated integration thread (depth/color/pointcloud, event-driven)
   integration_running_ = true;
@@ -172,9 +183,14 @@ NvbloxNode::~NvbloxNode()
     output_thread_.join();
   }
 
-  height_scan_running_ = false;
-  if (height_scan_thread_.joinable()) {
-    height_scan_thread_.join();
+  height_scan_query_running_ = false;
+  if (height_scan_query_thread_.joinable()) {
+    height_scan_query_thread_.join();
+  }
+
+  terrain_cache_running_ = false;
+  if (terrain_cache_thread_.joinable()) {
+    terrain_cache_thread_.join();
   }
 
   if (params_.after_shutdown_map_save_path.get().size() > 0) {
@@ -622,89 +638,26 @@ void NvbloxNode::pointcloudCallback(
   integration_cv_.notify_all();
 }
 
-namespace {
-
-// 对缓存的高度图进行位姿补偿双线性插值
-// cached_pose: 上一帧的 T_L_C (layer -> robot)
-// current_pose: 当前帧的 T_L_C
-// 返回补偿后的高度数据（与缓存数据同尺寸）
-std::vector<float> compensateHeightScan(
-  const std::vector<float>& cached_data,
-  const nvblox::Transform& cached_pose,
-  const nvblox::Transform& current_pose,
-  int x_steps, int y_steps,
-  float range_x, float range_y,
-  float resolution, float x_offset, float y_offset)
+void NvbloxNode::terrainCacheThreadFunc()
 {
-  const int total = x_steps * y_steps;
-  std::vector<float> compensated(total, 0.0f);
-
-  // dT = cached_pose^{-1} * current_pose
-  // 当前局部坐标 p_curr 对应的上一帧局部坐标: p_prev = dT * p_curr
-  const nvblox::Transform dT = cached_pose.inverse() * current_pose;
-
-  // 计算有效值的均值，用于越界回退
-  float mean_val = 0.0f;
-  int valid_count = 0;
-  for (float v : cached_data) {
-    if (std::isfinite(v)) {
-      mean_val += v;
-      ++valid_count;
-    }
-  }
-  mean_val = valid_count > 0 ? mean_val / valid_count : 0.0f;
-
-  for (int i = 0; i < y_steps; ++i) {
-    for (int j = 0; j < x_steps; ++j) {
-      const float lx = -range_x * 0.5f + j * resolution + x_offset;
-      const float ly = -range_y * 0.5f + i * resolution + y_offset;
-      const Eigen::Vector3f p_curr_local(lx, ly, 0.0f);
-      const Eigen::Vector3f p_prev_local = dT * p_curr_local;
-
-      // 映射回上一帧的网格索引（浮点）
-      const float jf = (p_prev_local.x() - (-range_x * 0.5f + x_offset)) / resolution;
-      const float fi = (p_prev_local.y() - (-range_y * 0.5f + y_offset)) / resolution;
-
-      const int j0 = static_cast<int>(std::floor(jf));
-      const int j1 = j0 + 1;
-      const int i0 = static_cast<int>(std::floor(fi));
-      const int i1 = i0 + 1;
-
-      const float wj = jf - static_cast<float>(j0);
-      const float wi = fi - static_cast<float>(i0);
-
-      if (j0 < 0 || j1 >= x_steps || i0 < 0 || i1 >= y_steps) {
-        compensated[i * x_steps + j] = mean_val;
-        continue;
-      }
-
-      const float h00 = cached_data[i0 * x_steps + j0];
-      const float h01 = cached_data[i0 * x_steps + j1];
-      const float h10 = cached_data[i1 * x_steps + j0];
-      const float h11 = cached_data[i1 * x_steps + j1];
-
-      const float val = (1.0f - wi) * (1.0f - wj) * h00
-                      + (1.0f - wi) * wj        * h01
-                      + wi        * (1.0f - wj) * h10
-                      + wi        * wj        * h11;
-      compensated[i * x_steps + j] = val;
-    }
-  }
-  return compensated;
-}
-
-}  // namespace
-
-void NvbloxNode::heightScanThreadFunc()
-{
-  const double height_scan_period_sec = 1.0 / params_.publish_locomotion_height_scan_rate_hz.get();
-  const auto period = std::chrono::duration<double>(height_scan_period_sec);
+  const double cache_period_sec = 1.0 / params_.terrain_cache_update_rate_hz.get();
+  const auto period = std::chrono::duration<double>(cache_period_sec);
   auto next_wake_time = std::chrono::steady_clock::now() + period;
 
-  RCLCPP_INFO(get_logger(), "Height scan thread started at %.1f Hz",
-              params_.publish_locomotion_height_scan_rate_hz.get());
+  const float range_x = params_.terrain_cache_range_x.get();
+  const float range_y = params_.terrain_cache_range_y.get();
+  const float resolution = params_.terrain_cache_resolution.get();
+  const float max_casting_depth = params_.terrain_cache_max_casting_depth.get();
+  const float z_offset = params_.terrain_cache_z_offset.get();
+  const int x_steps = static_cast<int>(range_x / resolution) + 1;
+  const int y_steps = static_cast<int>(range_y / resolution) + 1;
 
-  while (height_scan_running_) {
+  RCLCPP_INFO(get_logger(),
+              "Terrain cache thread started at %.1f Hz (range: %.1fx%.1f m, res: %.2f m, grid: %dx%d)",
+              params_.terrain_cache_update_rate_hz.get(), range_x, range_y, resolution,
+              x_steps, y_steps);
+
+  while (terrain_cache_running_) {
     // One-time ground plane initialization (needs unique_lock for TSDF write)
     if (layer_publisher_ && layer_publisher_->needsGroundPlaneInit()) {
       Transform T_L_C_init;
@@ -716,107 +669,264 @@ void NvbloxNode::heightScanThreadFunc()
       }
     }
 
-    // Regular height scan sampling (read-only, needs shared_lock)
-    {
-      // Look up transform outside the lock (TF2 buffer is thread-safe)
+    // Retry loop: attempt transform lookup + TSDF lock + terrain sampling
+    constexpr int kMaxRetries = 5;
+    constexpr auto kRetryInterval = std::chrono::milliseconds(2);
+    bool cache_updated = false;
+
+    for (int retry = 0; retry < kMaxRetries && terrain_cache_running_; ++retry) {
+      // Look up transform
       Transform T_L_C;
       if (!transformer_.lookupTransformToGlobalFrame(
               params_.map_clearing_frame_id, rclcpp::Time(0), &T_L_C)) {
-        std::this_thread::sleep_until(next_wake_time);
-        next_wake_time += period;
-        continue;
-      }
-
-      // Try to acquire shared_lock with short retries instead of blocking.
-      // This prevents long blocking (when integration holds unique_lock) from
-      // causing low-frequency anomalies followed by catch-up high-frequency bursts.
-      constexpr int kMaxRetries = 2;
-      constexpr auto kRetryInterval = std::chrono::milliseconds(2);
-      std::shared_lock<std::shared_mutex> lock(tsdf_rw_mutex_, std::defer_lock);
-      bool lock_acquired = false;
-      for (int retry = 0; retry < kMaxRetries && height_scan_running_; ++retry) {
-        if (lock.try_lock()) {
-          lock_acquired = true;
-          break;
-        }
         std::this_thread::sleep_for(kRetryInterval);
-      }
-
-      if (!lock_acquired) {
-        // 尝试使用缓存的位姿补偿数据发布，避免 locomotion 控制器丢数据
-        {
-          std::lock_guard<std::mutex> cache_lock(height_scan_cache_mutex_);
-          if (has_cached_height_scan_) {
-            constexpr int kXSteps = 17;
-            constexpr int kYSteps = 11;
-            constexpr float kRangeX = 1.6f;
-            constexpr float kRangeY = 1.0f;
-            constexpr float kResolution = 0.1f;
-            constexpr float kXOffset = 0.0f;
-            constexpr float kYOffset = 0.0f;
-
-            auto compensated = compensateHeightScan(
-              cached_height_scan_data_, cached_height_scan_pose_, T_L_C,
-              kXSteps, kYSteps, kRangeX, kRangeY, kResolution, kXOffset, kYOffset);
-
-            layer_publisher_->publishCachedLocomotionHeightScan(
-              compensated, params_.global_frame.get(), get_clock()->now());
-
-            RCLCPP_WARN_THROTTLE(
-              get_logger(), *get_clock(), 1000,
-              "Height scan lock failed; published pose-compensated cache.");
-          }
-        }
-        std::this_thread::sleep_until(next_wake_time);
-        next_wake_time += period;
         continue;
       }
 
-      timing::Timer publish_timer("ros/publish_locomotion_height_scan");
-
-      const std::string frame_id = params_.global_frame.get();
-      const rclcpp::Time timestamp = get_clock()->now();
-      std::vector<float> height_data;
-      layer_publisher_->publishLocomotionHeightScan(
-          T_L_C, frame_id, timestamp,
-          params_.layer_streamer_bandwidth_limit_mbps,
-          static_mapper_, dynamic_mapper_,
-          get_logger(), *cuda_stream_,
-          &height_data);
-
-      publish_timer.Stop();
-
-      // ---- HeightScan 统计、发布频率与系统资源记录 ----
-      float publish_freq_hz = 0.0f;
-      if (!heightscan_first_publish_) {
-        const double dt = (timestamp - heightscan_last_publish_time_).seconds();
-        if (dt > 1e-6) {
-          publish_freq_hz = static_cast<float>(1.0 / dt);
-        }
-      } else {
-        heightscan_first_publish_ = false;
-      }
-      heightscan_last_publish_time_ = timestamp;
-
-      if (heightscan_log_file_.is_open()) {
-        logHeightScanStats(timestamp, height_data, publish_freq_hz);
+      // Try to acquire shared_lock
+      std::shared_lock<std::shared_mutex> lock(tsdf_rw_mutex_, std::defer_lock);
+      if (!lock.try_lock()) {
+        std::this_thread::sleep_for(kRetryInterval);
+        continue;
       }
 
-      // 更新缓存，用于锁竞争时的位姿补偿回退
+      // Perform large-area terrain sampling via ray caster
+      std::vector<float> sample_x, sample_y, sample_z;
+      sample_x.resize(x_steps * y_steps, 0.0f);
+      sample_y.resize(x_steps * y_steps, 0.0f);
+      sample_z.resize(x_steps * y_steps, 0.0f);
+
+      auto* ray_caster = layer_publisher_->rayCaster();
+      if (ray_caster) {
+        ray_caster->sampleTerrainPoints(
+            sample_x, sample_y, sample_z,
+            static_mapper_->tsdf_layer(),
+            T_L_C,
+            range_x, range_y, resolution,
+            x_steps, y_steps,
+            0.0f, 0.0f,  // x_offset, y_offset centered
+            z_offset,
+            max_casting_depth,
+            *cuda_stream_);
+      }
+
+      // Convert absolute ground z to robot-relative height (robot_z - ground_z)
+      Vector3f robot_position = T_L_C.translation();
+      float robot_z = robot_position.z();
+      std::vector<float> height_data(sample_z.size());
+      for (size_t i = 0; i < sample_z.size(); ++i) {
+        height_data[i] = robot_z - sample_z[i];
+      }
+
+      // Update cache
       {
-        std::lock_guard<std::mutex> cache_lock(height_scan_cache_mutex_);
-        cached_height_scan_data_ = height_data;
-        cached_height_scan_pose_ = T_L_C;
-        has_cached_height_scan_ = true;
+        std::lock_guard<std::mutex> cache_lock(terrain_cache_mutex_);
+        terrain_cache_.height_data = std::move(height_data);
+        terrain_cache_.pose = T_L_C;
+        terrain_cache_.timestamp = get_clock()->now();
+        terrain_cache_.valid = true;
+        terrain_cache_.x_steps = x_steps;
+        terrain_cache_.y_steps = y_steps;
+        terrain_cache_.range_x = range_x;
+        terrain_cache_.range_y = range_y;
+        terrain_cache_.resolution = resolution;
+        terrain_cache_.x_offset = 0.0f;
+        terrain_cache_.y_offset = 0.0f;
+        terrain_cache_.robot_z = robot_z;
       }
+
+      // Publish terrain cache point cloud (global coordinates)
+      layer_publisher_->publishTerrainCachePointCloud(
+        sample_x, sample_y, sample_z,
+        params_.global_frame.get(), get_clock()->now());
+
+      cache_updated = true;
+      break;  // success, exit retry loop
     }
 
-    // Sleep until next wake time to maintain stable rate
+    if (!cache_updated) {
+      RCLCPP_WARN_THROTTLE(get_logger(), *get_clock(), 1000,
+                           "Terrain cache update failed after %d retries; skipping this cycle.",
+                           kMaxRetries);
+    }
+
     std::this_thread::sleep_until(next_wake_time);
     next_wake_time += period;
   }
 
-  RCLCPP_INFO(get_logger(), "Height scan thread stopped");
+  RCLCPP_INFO(get_logger(), "Terrain cache thread stopped");
+}
+
+void NvbloxNode::heightScanQueryThreadFunc()
+{
+  const double query_period_sec = 1.0 / params_.publish_locomotion_height_scan_rate_hz.get();
+  const auto period = std::chrono::duration<double>(query_period_sec);
+  auto next_wake_time = std::chrono::steady_clock::now() + period;
+
+  // Locomotion scan parameters (from ROS params)
+  const float kRangeX = params_.locomotion_height_scan_range_x.get();
+  const float kRangeY = params_.locomotion_height_scan_range_y.get();
+  const float kResolution = params_.locomotion_height_scan_resolution.get();
+  const float kXOffset = params_.locomotion_height_scan_x_offset.get();
+  const float kYOffset = params_.locomotion_height_scan_y_offset.get();
+  const int kXSteps = static_cast<int>(kRangeX / kResolution) + 1;
+  const int kYSteps = static_cast<int>(kRangeY / kResolution) + 1;
+  const int kTotalPoints = kXSteps * kYSteps;
+
+  // Pre-compute locomotion grid local coordinates (invariant across iterations)
+  std::vector<float> local_x(kXSteps);
+  std::vector<float> local_y(kYSteps);
+  for (int j = 0; j < kXSteps; ++j) {
+    local_x[j] = -kRangeX * 0.5f + j * kResolution + kXOffset;
+  }
+  for (int i = 0; i < kYSteps; ++i) {
+    local_y[i] = -kRangeY * 0.5f + i * kResolution + kYOffset;
+  }
+
+  RCLCPP_INFO(get_logger(), "Height scan query thread started at %.1f Hz (grid: %dx%d = %d points)",
+              params_.publish_locomotion_height_scan_rate_hz.get(), kXSteps, kYSteps, kTotalPoints);
+
+  while (height_scan_query_running_) {
+    Transform T_L_C;
+    if (!transformer_.lookupTransformToGlobalFrame(
+            params_.map_clearing_frame_id, rclcpp::Time(0), &T_L_C)) {
+      std::this_thread::sleep_until(next_wake_time);
+      next_wake_time += period;
+      continue;
+    }
+
+    // Read cache (lock-protected copy)
+    TerrainCache cache;
+    {
+      std::lock_guard<std::mutex> cache_lock(terrain_cache_mutex_);
+      cache = terrain_cache_;
+    }
+
+    if (!cache.valid) {
+      std::this_thread::sleep_until(next_wake_time);
+      next_wake_time += period;
+      continue;
+    }
+
+    // Pose-compensated bilinear interpolation
+    // dT = cache_pose.inverse() * current_pose
+    // p_cache_local = dT * p_current_local
+    const Transform dT = cache.pose.inverse() * T_L_C;
+
+    // Pre-extract dT affine parts for fast per-point transform
+    const Eigen::Matrix3f dT_R = dT.rotation();
+    const Eigen::Vector3f dT_t = dT.translation();
+    // For (lx, ly, 0): only need first two columns of rotation
+    const float dT_r00 = dT_R(0, 0), dT_r01 = dT_R(0, 1);
+    const float dT_r10 = dT_R(1, 0), dT_r11 = dT_R(1, 1);
+    const float dT_tx = dT_t.x(), dT_ty = dT_t.y();
+
+    // Z-drift compensation: height_data stores (robot_z_cache - ground_z),
+    // but we need (robot_z_current - ground_z) at query time.
+    const float z_delta = T_L_C.translation().z() - cache.robot_z;
+
+    // Compute mean for fallback (with z-drift compensation)
+    float mean_val = 0.0f;
+    {
+      float sum = 0.0f;
+      int count = 0;
+      for (float v : cache.height_data) {
+        if (std::isfinite(v)) {
+          sum += v;
+          ++count;
+        }
+      }
+      mean_val = count > 0 ? sum / count + z_delta : 0.0f;
+    }
+
+    // Pre-compute yaw transform for PointCloud2 (invariant for all points in this query)
+    const Eigen::Vector3f t = T_L_C.translation();
+    const float yaw = std::atan2(T_L_C.rotation()(1, 0), T_L_C.rotation()(0, 0));
+    const float cos_yaw = std::cos(yaw);
+    const float sin_yaw = std::sin(yaw);
+
+    // Cache grid origin offsets (invariant)
+    const float cache_ox = -cache.range_x * 0.5f + cache.x_offset;
+    const float cache_oy = -cache.range_y * 0.5f + cache.y_offset;
+    const float inv_res = 1.0f / cache.resolution;
+
+    std::vector<float> query_heights(kTotalPoints, 0.0f);
+    std::vector<Eigen::Vector3f> query_points;
+    query_points.reserve(kTotalPoints);
+
+    for (int i = 0; i < kYSteps; ++i) {
+      const float ly = local_y[i];
+
+      for (int j = 0; j < kXSteps; ++j) {
+        const float lx = local_x[j];
+
+        // Fast 2D affine transform: p_cache_local.xy = dT_R * (lx, ly, 0) + dT_t.xy
+        const float pcx = dT_r00 * lx + dT_r01 * ly + dT_tx;
+        const float pcy = dT_r10 * lx + dT_r11 * ly + dT_ty;
+
+        // Grid coordinates in cache
+        const float jf = (pcx - cache_ox) * inv_res;
+        const float fi = (pcy - cache_oy) * inv_res;
+
+        const int j0 = static_cast<int>(std::floor(jf));
+        const int i0 = static_cast<int>(std::floor(fi));
+
+        float val = mean_val;
+        if (j0 >= 0 && j0 + 1 < cache.x_steps && i0 >= 0 && i0 + 1 < cache.y_steps) {
+          const int j1 = j0 + 1;
+          const int i1 = i0 + 1;
+          const float wj = jf - static_cast<float>(j0);
+          const float wi = fi - static_cast<float>(i0);
+
+          const float h00 = cache.height_data[i0 * cache.x_steps + j0];
+          const float h01 = cache.height_data[i0 * cache.x_steps + j1];
+          const float h10 = cache.height_data[i1 * cache.x_steps + j0];
+          const float h11 = cache.height_data[i1 * cache.x_steps + j1];
+
+          val = (1.0f - wi) * (1.0f - wj) * h00
+              + (1.0f - wi) * wj        * h01
+              + wi        * (1.0f - wj) * h10
+              + wi        * wj        * h11;
+          val += z_delta;  // compensate z drift since cache time
+        }
+        query_heights[i * kXSteps + j] = val;
+
+        // Ground point in base_link: (lx, ly, -val)
+        // Transform to global using yaw-only rotation (ignore pitch/roll)
+        const float gx = t.x() + cos_yaw * lx - sin_yaw * ly;
+        const float gy = t.y() + sin_yaw * lx + cos_yaw * ly;
+        const float gz = t.z() - val;
+        query_points.emplace_back(gx, gy, gz);
+      }
+    }
+
+    // Publish Float32MultiArray + PointCloud2
+    const std::string frame_id = params_.global_frame.get();
+    const rclcpp::Time timestamp = get_clock()->now();
+    layer_publisher_->publishLocomotionHeightScanData(query_heights, frame_id, timestamp);
+    layer_publisher_->publishLocomotionHeightScanPointCloud(query_points, frame_id, timestamp);
+
+    // Stats
+    float publish_freq_hz = 0.0f;
+    if (!heightscan_first_publish_) {
+      const double dt = (timestamp - heightscan_last_publish_time_).seconds();
+      if (dt > 1e-6) {
+        publish_freq_hz = static_cast<float>(1.0 / dt);
+      }
+    } else {
+      heightscan_first_publish_ = false;
+    }
+    heightscan_last_publish_time_ = timestamp;
+
+    if (heightscan_log_file_.is_open()) {
+      logHeightScanStats(timestamp, query_heights, publish_freq_hz);
+    }
+
+    std::this_thread::sleep_until(next_wake_time);
+    next_wake_time += period;
+  }
+
+  RCLCPP_INFO(get_logger(), "Height scan query thread stopped");
 }
 
 void NvbloxNode::integrationThreadFunc()
@@ -999,7 +1109,8 @@ void NvbloxNode::tick()
   // - integrationThreadFunc(): depth/color/pointcloud queues
   // - maintenanceThreadFunc(): decay, map clearing
   // - outputThreadFunc(): ESDF, layer publishing, debug vis
-  // - heightScanThreadFunc(): height scan at 50Hz
+  // - terrainCacheThreadFunc(): low-freq large-area terrain sampling (needs TSDF lock)
+  // - heightScanQueryThreadFunc(): high-freq local query from cache (pure CPU, no TSDF lock)
 
   // Only print statistics in tick (lightweight)
   auto & clk = *get_clock();

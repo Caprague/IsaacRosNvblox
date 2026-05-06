@@ -264,8 +264,42 @@ Visualization Manager:
     - Alpha: 1
       Autocompute Intensity Bounds: true
       Autocompute Value Bounds:
-        Max Value: 0.3983973264694214
-        Min Value: -0.20160263776779175
+        Max Value: 10
+        Min Value: -10
+        Value: true
+      Axis: Z
+      Channel Name: intensity
+      Class: rviz_default_plugins/PointCloud2
+      Color: 255; 255; 255
+      Color Transformer: Intensity
+      Decay Time: 0
+      Enabled: true
+      Invert Rainbow: false
+      Max Color: 255; 255; 255
+      Max Intensity: 4096
+      Min Color: 0; 0; 0
+      Min Intensity: 0
+      Name: TerranCachePC
+      Position Transformer: XYZ
+      Selectable: true
+      Size (Pixels): 5
+      Size (m): 0.009999999776482582
+      Style: Points
+      Topic:
+        Depth: 5
+        Durability Policy: Volatile
+        Filter size: 10
+        History Policy: Keep Last
+        Reliability Policy: Reliable
+        Value: /nvblox_node/terrain_cache_height_scan_pc
+      Use Fixed Frame: true
+      Use rainbow: true
+      Value: true
+    - Alpha: 1
+      Autocompute Intensity Bounds: true
+      Autocompute Value Bounds:
+        Max Value: -0.17180214822292328
+        Min Value: -0.18657852709293365
         Value: true
       Axis: Z
       Channel Name: intensity
@@ -388,7 +422,7 @@ Visualization Manager:
   Views:
     Current:
       Class: rviz_default_plugins/ThirdPersonFollower
-      Distance: 0.8098174333572388
+      Distance: 7.811738967895508
       Enable Stereo Rendering:
         Stereo Eye Separation: 0.05999999865889549
         Stereo Focal Distance: 1
@@ -403,10 +437,10 @@ Visualization Manager:
       Invert Z Axis: false
       Name: Current View
       Near Clip Distance: 0.009999999776482582
-      Pitch: 0.27308422327041626
+      Pitch: 0.5880834460258484
       Target Frame: camera_link
       Value: ThirdPersonFollower (rviz_default_plugins)
-      Yaw: 3.2803196907043457
+      Yaw: 3.2303378582000732
     Saved: ~
 Window Geometry:
   Color Image:

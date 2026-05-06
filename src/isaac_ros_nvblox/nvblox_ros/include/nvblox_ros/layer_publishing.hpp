@@ -42,14 +42,33 @@ namespace nvblox
 class LayerPublisher
 {
 public:
-  /// Create a layer publisher.
+  /// Backward-compatible constructor (uses default locomotion scan params).
+  LayerPublisher(
+    const MappingType mapping_type, const float min_tsdf_weight,
+    const float exclusion_height_m, const float exclusion_radius_m,
+    rclcpp::Node * node);
+
+  /// Full constructor with locomotion scan parameters.
   ///
   /// @param mapping_type Mapping type, used to determine which topics to advertise
   /// @param min_tsdf_weight Min weight for visualized TSDF voxels
+  /// @param exclusion_height_m Max height for visualization exclusion
+  /// @param exclusion_radius_m Max radius for visualization exclusion
+  /// @param locomotion_range_x X-axis range of locomotion height scan (meters)
+  /// @param locomotion_range_y Y-axis range of locomotion height scan (meters)
+  /// @param locomotion_resolution Grid resolution of locomotion height scan (meters)
+  /// @param locomotion_x_offset X-axis offset of locomotion scan grid center (meters)
+  /// @param locomotion_y_offset Y-axis offset of locomotion scan grid center (meters)
+  /// @param locomotion_z_offset Z-offset above robot base for ray casting origin (meters)
+  /// @param locomotion_max_casting_depth Maximum vertical ray casting depth (meters)
   /// @param node ROS node
   LayerPublisher(
     const MappingType mapping_type, const float min_tsdf_weight,
-    const float exclusion_height_m, const float exclusion_radius_m, rclcpp::Node * node);
+    const float exclusion_height_m, const float exclusion_radius_m,
+    const float locomotion_range_x, const float locomotion_range_y,
+    const float locomotion_resolution, const float locomotion_x_offset,
+    const float locomotion_y_offset, const float locomotion_z_offset,
+    const float locomotion_max_casting_depth, rclcpp::Node * node);
 
   /// Serialize and publish all layers that have active subscribers
   ///
@@ -116,6 +135,31 @@ public:
     }
   }
 
+  /// 访问内部的 CUDA 垂直光线投射采样器（供缓存线程直接调用）
+  conversions::CudaVerticalRayCaster* rayCaster() {
+    return ray_caster_.get();
+  }
+
+  /// 发布已计算好的 locomotion 高程数据（供高频查询线程直接发布插值结果）
+  void publishLocomotionHeightScanData(
+    const std::vector<float>& height_data,
+    const std::string& frame_id,
+    const rclcpp::Time& timestamp);
+
+  /// 发布 locomotion 高程采样点云（供高频查询线程发布插值后的三维点云）
+  void publishLocomotionHeightScanPointCloud(
+    const std::vector<Eigen::Vector3f>& points,
+    const std::string& frame_id,
+    const rclcpp::Time& timestamp);
+
+  /// 发布 terrain cache 高程采样点云（供缓存线程发布大范围采样点云）
+  void publishTerrainCachePointCloud(
+    const std::vector<float>& x,
+    const std::vector<float>& y,
+    const std::vector<float>& z,
+    const std::string& frame_id,
+    const rclcpp::Time& timestamp);
+
 private:
   /// Determine which layer should be streamed based on active subscribers
   LayerTypeBitMask getLayersToStreamBitMask();
@@ -151,6 +195,17 @@ private:
   float min_tsdf_weight_ = 0;
   float exclusion_height_m_ = -1.0;
   float exclusion_radius_m_ = -1.0;
+
+  // Locomotion scan parameters (from constructor)
+  float locomotion_range_x_ = 1.6f;
+  float locomotion_range_y_ = 1.0f;
+  float locomotion_resolution_ = 0.1f;
+  float locomotion_x_offset_ = 0.0f;
+  float locomotion_y_offset_ = 0.0f;
+  float locomotion_z_offset_ = 0.5f;
+  float locomotion_max_casting_depth_ = 3.0f;
+  int locomotion_x_steps_ = 17;
+  int locomotion_y_steps_ = 11;
 
   // Publishers using nvblox plugin. Allows for bandwidth limitation.
   rclcpp::Publisher<nvblox_msgs::msg::Mesh>::SharedPtr mesh_publisher_;
@@ -192,6 +247,7 @@ private:
   // 可视化发布
   rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr locomotion_hs_pc_publisher_;
   rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr navigation_hs_pc_publisher_;
+  rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr terrain_cache_pc_publisher_;
 };
 
 }  // namespace nvblox

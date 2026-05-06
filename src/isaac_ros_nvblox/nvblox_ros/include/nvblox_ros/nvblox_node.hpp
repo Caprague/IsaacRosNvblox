@@ -198,7 +198,6 @@ protected:
   virtual void processEsdf();
 
   // Dedicated worker thread entry points (decoupled from tick)
-  void heightScanThreadFunc();
   void integrationThreadFunc();
   void maintenanceThreadFunc();
   void outputThreadFunc();
@@ -466,10 +465,13 @@ protected:
   // Main tick thread: unique_lock during TSDF writes, shared_lock during reads.
   std::shared_mutex tsdf_rw_mutex_;
 
-  // Dedicated thread for height scan at stable 50Hz
-  std::thread height_scan_thread_;
-  // Shutdown flag for the height scan thread
-  std::atomic<bool> height_scan_running_{false};
+  // Dedicated thread for low-frequency large-area terrain cache sampling (needs TSDF lock)
+  std::thread terrain_cache_thread_;
+  std::atomic<bool> terrain_cache_running_{false};
+
+  // Dedicated thread for high-frequency locomotion height scan query (no TSDF lock, pure CPU interpolation)
+  std::thread height_scan_query_thread_;
+  std::atomic<bool> height_scan_query_running_{false};
 
   // Dedicated thread for sensor integration (depth/color/pointcloud)
   std::thread integration_thread_;
@@ -485,21 +487,39 @@ protected:
   std::thread output_thread_;
   std::atomic<bool> output_running_{false};
 
+  // ---- Terrain Cache (shared between cache thread and query thread) ----
+  struct TerrainCache {
+    std::vector<float> height_data;   // robot-relative heights (relative to robot_z at cache time)
+    Transform pose{Transform::Identity()};
+    rclcpp::Time timestamp;
+    bool valid = false;
+    int x_steps = 0;
+    int y_steps = 0;
+    float range_x = 0.0f;
+    float range_y = 0.0f;
+    float resolution = 0.0f;
+    float x_offset = 0.0f;
+    float y_offset = 0.0f;
+    float robot_z = 0.0f;            // robot z at cache time, for z-drift compensation
+  };
+  TerrainCache terrain_cache_;
+  std::mutex terrain_cache_mutex_;
+
   // ---- HeightScan 统计与系统资源日志 ----
   std::ofstream heightscan_log_file_;
   rclcpp::Time heightscan_last_publish_time_ = rclcpp::Time(0, 0, RCL_ROS_TIME);
   bool heightscan_first_publish_ = true;
 
-  // ---- HeightScan 缓存（锁竞争时的位姿补偿回退） ----
-  std::vector<float> cached_height_scan_data_;
-  Transform cached_height_scan_pose_{Transform::Identity()};
-  bool has_cached_height_scan_ = false;
-  std::mutex height_scan_cache_mutex_;
-
   // CPU 统计缓存
   unsigned long long heightscan_last_cpu_total_ = 0;
   unsigned long long heightscan_last_cpu_idle_ = 0;
   bool heightscan_cpu_stat_initialized_ = false;
+
+  /// Low-frequency thread: large-area terrain sampling, GPU smoothing, cache update
+  void terrainCacheThreadFunc();
+
+  /// High-frequency thread: query local scan from cache via pose transform + bilinear interpolation
+  void heightScanQueryThreadFunc();
 
   /// 初始化 CSV 日志文件（写入表头）
   void initializeHeightScanLogger();

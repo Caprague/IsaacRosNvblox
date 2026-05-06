@@ -621,14 +621,14 @@ void LayerPublisher::publishCachedLocomotionHeightScan(
     return;
   }
 
-  // Locomotion grid dimensions (must match publishLocomotionHeightScan_impl)
-  constexpr int kXSteps = 17;
-  constexpr int kYSteps = 11;
+  // Locomotion grid dimensions (from constructor params)
+  const int x_steps = locomotion_x_steps_;
+  const int y_steps = locomotion_y_steps_;
 
-  if (static_cast<int>(height_data.size()) != kXSteps * kYSteps) {
+  if (static_cast<int>(height_data.size()) != x_steps * y_steps) {
     RCLCPP_WARN(rclcpp::get_logger("LayerPublisher"),
                 "Cached height data size %zu does not match expected grid size %d",
-                height_data.size(), kXSteps * kYSteps);
+                height_data.size(), x_steps * y_steps);
     return;
   }
 
@@ -636,17 +636,88 @@ void LayerPublisher::publishCachedLocomotionHeightScan(
   msg.layout.dim.clear();
   auto dim_x = std_msgs::msg::MultiArrayDimension();
   dim_x.label = "x";
-  dim_x.size = kXSteps;
-  dim_x.stride = kXSteps * kYSteps;
+  dim_x.size = x_steps;
+  dim_x.stride = x_steps * y_steps;
   msg.layout.dim.push_back(dim_x);
   auto dim_y = std_msgs::msg::MultiArrayDimension();
   dim_y.label = "y";
-  dim_y.size = kYSteps;
-  dim_y.stride = kYSteps;
+  dim_y.size = y_steps;
+  dim_y.stride = y_steps;
   msg.layout.dim.push_back(dim_y);
   msg.data = height_data;
   msg.layout.data_offset = 0;
   locomotion_hs_publisher_->publish(msg);
+}
+
+void LayerPublisher::publishLocomotionHeightScanData(
+  const std::vector<float>& height_data,
+  const std::string& frame_id,
+  const rclcpp::Time& timestamp)
+{
+  // Delegate to the existing cached-publish implementation
+  publishCachedLocomotionHeightScan(height_data, frame_id, timestamp);
+}
+
+void LayerPublisher::publishLocomotionHeightScanPointCloud(
+  const std::vector<Eigen::Vector3f>& points,
+  const std::string& frame_id,
+  const rclcpp::Time& timestamp)
+{
+  if (!locomotion_hs_pc_publisher_ || locomotion_hs_pc_publisher_->get_subscription_count() == 0) {
+    return;
+  }
+
+  sensor_msgs::msg::PointCloud2 msg;
+  msg.header.frame_id = frame_id;
+  msg.header.stamp = timestamp;
+  sensor_msgs::PointCloud2Modifier modifier(msg);
+  modifier.setPointCloud2FieldsByString(1, "xyz");
+  modifier.resize(points.size());
+
+  sensor_msgs::PointCloud2Iterator<float> iter_x(msg, "x");
+  sensor_msgs::PointCloud2Iterator<float> iter_y(msg, "y");
+  sensor_msgs::PointCloud2Iterator<float> iter_z(msg, "z");
+  for (const auto& p : points) {
+    *iter_x = p.x();
+    *iter_y = p.y();
+    *iter_z = p.z();
+    ++iter_x; ++iter_y; ++iter_z;
+  }
+  locomotion_hs_pc_publisher_->publish(msg);
+}
+
+void LayerPublisher::publishTerrainCachePointCloud(
+  const std::vector<float>& x,
+  const std::vector<float>& y,
+  const std::vector<float>& z,
+  const std::string& frame_id,
+  const rclcpp::Time& timestamp)
+{
+  if (!terrain_cache_pc_publisher_ || terrain_cache_pc_publisher_->get_subscription_count() == 0) {
+    return;
+  }
+
+  const size_t n = x.size();
+  if (n == 0 || y.size() != n || z.size() != n) {
+    return;
+  }
+
+  sensor_msgs::msg::PointCloud2 msg;
+  msg.header.frame_id = frame_id;
+  msg.header.stamp = timestamp;
+  sensor_msgs::PointCloud2Modifier modifier(msg);
+  modifier.setPointCloud2FieldsByString(1, "xyz");
+  modifier.resize(n);
+
+  sensor_msgs::PointCloud2Iterator<float> iter_x(msg, "x");
+  sensor_msgs::PointCloud2Iterator<float> iter_y(msg, "y");
+  sensor_msgs::PointCloud2Iterator<float> iter_z(msg, "z");
+  for (size_t i = 0; i < n; ++i, ++iter_x, ++iter_y, ++iter_z) {
+    *iter_x = x[i];
+    *iter_y = y[i];
+    *iter_z = z[i];
+  }
+  terrain_cache_pc_publisher_->publish(msg);
 }
 
 void LayerPublisher::publishNavigationHeightScan(
@@ -678,16 +749,16 @@ void LayerPublisher::publishLocomotionHeightScan_impl(
   const CudaStream& cuda_stream,
   std::vector<float>* height_data_out) 
 {
-  // 采样参数
-  const float range_x = 1.6f;
-  const float range_y = 1.0f;
-  const float resolution = 0.1f;
-  const float x_offset = 0.0f;
-  const float y_offset = 0.0f;
-  const float z_offset = 0.5f;
-  const float max_casting_depth = 3.0f;
-  const int x_steps = static_cast<int>(range_x / resolution) + 1;
-  const int y_steps = static_cast<int>(range_y / resolution) + 1;
+  // 采样参数（从构造参数传入，避免硬编码）
+  const float range_x = locomotion_range_x_;
+  const float range_y = locomotion_range_y_;
+  const float resolution = locomotion_resolution_;
+  const float x_offset = locomotion_x_offset_;
+  const float y_offset = locomotion_y_offset_;
+  const float z_offset = locomotion_z_offset_;
+  const float max_casting_depth = locomotion_max_casting_depth_;
+  const int x_steps = locomotion_x_steps_;
+  const int y_steps = locomotion_y_steps_;
   
   // 存储网格点高程采样结果
   locomotion_sample_points_x.clear();
@@ -854,9 +925,37 @@ LayerPublisher::LayerPublisher(
   const float exclusion_height_m,
   const float exclusion_radius_m,
   rclcpp::Node * node)
+: LayerPublisher(
+    mapping_type, min_tsdf_weight, exclusion_height_m, exclusion_radius_m,
+    1.6f, 1.0f, 0.1f, 0.0f, 0.0f, 0.5f, 3.0f, node)
+{
+}
+
+LayerPublisher::LayerPublisher(
+  const MappingType mapping_type,
+  const float min_tsdf_weight,
+  const float exclusion_height_m,
+  const float exclusion_radius_m,
+  const float locomotion_range_x,
+  const float locomotion_range_y,
+  const float locomotion_resolution,
+  const float locomotion_x_offset,
+  const float locomotion_y_offset,
+  const float locomotion_z_offset,
+  const float locomotion_max_casting_depth,
+  rclcpp::Node * node)
 : min_tsdf_weight_(min_tsdf_weight),
   exclusion_height_m_(exclusion_height_m),
-  exclusion_radius_m_(exclusion_radius_m)
+  exclusion_radius_m_(exclusion_radius_m),
+  locomotion_range_x_(locomotion_range_x),
+  locomotion_range_y_(locomotion_range_y),
+  locomotion_resolution_(locomotion_resolution),
+  locomotion_x_offset_(locomotion_x_offset),
+  locomotion_y_offset_(locomotion_y_offset),
+  locomotion_z_offset_(locomotion_z_offset),
+  locomotion_max_casting_depth_(locomotion_max_casting_depth),
+  locomotion_x_steps_(static_cast<int>(locomotion_range_x / locomotion_resolution) + 1),
+  locomotion_y_steps_(static_cast<int>(locomotion_range_y / locomotion_resolution) + 1)
 {
   // Mesh publishers
   mesh_publisher_ = node->create_publisher<nvblox_msgs::msg::Mesh>("~/mesh", 1);
@@ -913,6 +1012,9 @@ LayerPublisher::LayerPublisher(
   navigation_hs_pc_publisher_ = 
       node->create_publisher<sensor_msgs::msg::PointCloud2>(
           "~/navigation_height_scan_pc", 1);
+  terrain_cache_pc_publisher_ = 
+      node->create_publisher<sensor_msgs::msg::PointCloud2>(
+          "~/terrain_cache_height_scan_pc", 1);
 
   // 初始化 CUDA 垂直光线投射采样器
   ray_caster_ = std::make_unique<conversions::CudaVerticalRayCaster>(3.0f);

@@ -267,7 +267,61 @@ constexpr Param<float>::Description kPublishNavigationHeightScanRateHzParamDesc{
 
 constexpr Param<bool>::Description kEnableHeightScanStatsLoggingParamDesc{
   "enable_heightscan_stats_logging", false,
-  "Whether to enable height scan stats logging (CSV with frequency, CPU/GPU load, memory)."};  
+  "Whether to enable height scan stats logging (CSV with frequency, CPU/GPU load, memory)."};
+
+// ======= TERRAIN CACHE PARAMS =======
+constexpr Param<float>::Description kTerrainCacheRangeXParamDesc{
+  "terrain_cache_range_x", 4.0f,
+  "X-axis range of the terrain cache sampling area (meters)."};
+
+constexpr Param<float>::Description kTerrainCacheRangeYParamDesc{
+  "terrain_cache_range_y", 4.0f,
+  "Y-axis range of the terrain cache sampling area (meters)."};
+
+constexpr Param<float>::Description kTerrainCacheResolutionParamDesc{
+  "terrain_cache_resolution", 0.1f,
+  "Grid resolution of the terrain cache sampling (meters)."};
+
+constexpr Param<float>::Description kTerrainCacheUpdateRateHzParamDesc{
+  "terrain_cache_update_rate_hz", 5.0f,
+  "Update rate of the low-frequency terrain cache sampling thread (Hz)."};
+
+constexpr Param<float>::Description kTerrainCacheMaxCastingDepthParamDesc{
+  "terrain_cache_max_casting_depth", 3.0f,
+  "Maximum vertical ray casting depth for terrain cache sampling (meters)."};
+
+constexpr Param<float>::Description kTerrainCacheZOffsetParamDesc{
+  "terrain_cache_z_offset", 0.5f,
+  "Z-offset above robot base for ray casting origin in terrain cache sampling (meters)."};
+
+// ======= LOCOMOTION HEIGHT SCAN PARAMS =======
+constexpr Param<float>::Description kLocomotionHeightScanRangeXParamDesc{
+  "locomotion_height_scan_range_x", 1.6f,
+  "X-axis range of the locomotion height scan sampling area (meters)."};
+
+constexpr Param<float>::Description kLocomotionHeightScanRangeYParamDesc{
+  "locomotion_height_scan_range_y", 1.0f,
+  "Y-axis range of the locomotion height scan sampling area (meters)."};
+
+constexpr Param<float>::Description kLocomotionHeightScanResolutionParamDesc{
+  "locomotion_height_scan_resolution", 0.1f,
+  "Grid resolution of the locomotion height scan sampling (meters)."};
+
+constexpr Param<float>::Description kLocomotionHeightScanXOffsetParamDesc{
+  "locomotion_height_scan_x_offset", 0.0f,
+  "X-axis offset of the locomotion height scan grid center (meters)."};
+
+constexpr Param<float>::Description kLocomotionHeightScanYOffsetParamDesc{
+  "locomotion_height_scan_y_offset", 0.0f,
+  "Y-axis offset of the locomotion height scan grid center (meters)."};
+
+constexpr Param<float>::Description kLocomotionHeightScanZOffsetParamDesc{
+  "locomotion_height_scan_z_offset", 0.5f,
+  "Z-offset above robot base for ray casting origin in locomotion height scan (meters)."};
+
+constexpr Param<float>::Description kLocomotionHeightScanMaxCastingDepthParamDesc{
+  "locomotion_height_scan_max_casting_depth", 3.0f,
+  "Maximum vertical ray casting depth for locomotion height scan sampling (meters)."};
 
 // ======= OUTPUT PARAMS =======
 constexpr Param<float>::Description kEsdfAndGradientsUnobservedValueParamDesc{
@@ -389,6 +443,23 @@ public:
   Param<float> publish_navigation_height_scan_rate_hz{kPublishNavigationHeightScanRateHzParamDesc};
   Param<bool> enable_heightscan_stats_logging{kEnableHeightScanStatsLoggingParamDesc};
   Param<float> distance_map_local_maintenance{kDistanceMapLocalMaintenance};
+
+  // ======= TERRAIN CACHE PARAMS (low-freq large-area sampling) =======
+  Param<float> terrain_cache_range_x{kTerrainCacheRangeXParamDesc};
+  Param<float> terrain_cache_range_y{kTerrainCacheRangeYParamDesc};
+  Param<float> terrain_cache_resolution{kTerrainCacheResolutionParamDesc};
+  Param<float> terrain_cache_update_rate_hz{kTerrainCacheUpdateRateHzParamDesc};
+  Param<float> terrain_cache_max_casting_depth{kTerrainCacheMaxCastingDepthParamDesc};
+  Param<float> terrain_cache_z_offset{kTerrainCacheZOffsetParamDesc};
+
+  // ======= LOCOMOTION HEIGHT SCAN PARAMS (high-freq local query) =======
+  Param<float> locomotion_height_scan_range_x{kLocomotionHeightScanRangeXParamDesc};
+  Param<float> locomotion_height_scan_range_y{kLocomotionHeightScanRangeYParamDesc};
+  Param<float> locomotion_height_scan_resolution{kLocomotionHeightScanResolutionParamDesc};
+  Param<float> locomotion_height_scan_x_offset{kLocomotionHeightScanXOffsetParamDesc};
+  Param<float> locomotion_height_scan_y_offset{kLocomotionHeightScanYOffsetParamDesc};
+  Param<float> locomotion_height_scan_z_offset{kLocomotionHeightScanZOffsetParamDesc};
+  Param<float> locomotion_height_scan_max_casting_depth{kLocomotionHeightScanMaxCastingDepthParamDesc};
 };
 
 /// Container for all node params of the fuser node.

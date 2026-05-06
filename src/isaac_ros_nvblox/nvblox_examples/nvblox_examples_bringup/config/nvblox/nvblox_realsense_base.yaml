@@ -24,6 +24,23 @@
     publish_navigation_height_scan_rate_hz: 20.0
     enable_heightscan_stats_logging: true
 
+    # --- Terrain cache params (low-freq large-area sampling, 5Hz default) ---
+    terrain_cache_range_x: 4.0
+    terrain_cache_range_y: 4.0
+    terrain_cache_resolution: 0.1
+    terrain_cache_update_rate_hz: 5.0
+    terrain_cache_max_casting_depth: 3.0
+    terrain_cache_z_offset: 0.5
+
+    # --- Locomotion height scan params (high-freq local query, default 1.6x1.0m @ 0.1m) ---
+    locomotion_height_scan_range_x: 1.6
+    locomotion_height_scan_range_y: 1.0
+    locomotion_height_scan_resolution: 0.1
+    locomotion_height_scan_x_offset: 0.0
+    locomotion_height_scan_y_offset: 0.0
+    locomotion_height_scan_z_offset: 0.5
+    locomotion_height_scan_max_casting_depth: 3.0
+
     # --- Maintenance thread rates ---
     # Thread wake-up rate = max(decay_tsdf, decay_dynamic_occupancy, clear_map_outside_radius)
     # Each operation executes at its own rate via shouldProcess gating

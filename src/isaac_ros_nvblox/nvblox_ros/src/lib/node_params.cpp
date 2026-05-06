@@ -166,6 +166,23 @@ void initializeNvbloxNodeParams(
   initParam<float>(node, &params->publish_navigation_height_scan_rate_hz, parameter_tree);
   initParam<bool>(node, &params->enable_heightscan_stats_logging, parameter_tree);
   initParam<float>(node, &params->distance_map_local_maintenance, parameter_tree);
+
+  // Terrain cache params
+  initParam<float>(node, &params->terrain_cache_range_x, parameter_tree);
+  initParam<float>(node, &params->terrain_cache_range_y, parameter_tree);
+  initParam<float>(node, &params->terrain_cache_resolution, parameter_tree);
+  initParam<float>(node, &params->terrain_cache_update_rate_hz, parameter_tree);
+  initParam<float>(node, &params->terrain_cache_max_casting_depth, parameter_tree);
+  initParam<float>(node, &params->terrain_cache_z_offset, parameter_tree);
+
+  // Locomotion height scan params
+  initParam<float>(node, &params->locomotion_height_scan_range_x, parameter_tree);
+  initParam<float>(node, &params->locomotion_height_scan_range_y, parameter_tree);
+  initParam<float>(node, &params->locomotion_height_scan_resolution, parameter_tree);
+  initParam<float>(node, &params->locomotion_height_scan_x_offset, parameter_tree);
+  initParam<float>(node, &params->locomotion_height_scan_y_offset, parameter_tree);
+  initParam<float>(node, &params->locomotion_height_scan_z_offset, parameter_tree);
+  initParam<float>(node, &params->locomotion_height_scan_max_casting_depth, parameter_tree);
 }
 
 void initializeFuserNodeParams(

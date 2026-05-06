@@ -156,7 +156,7 @@ private:
 
   // 地平面初始化参数
   int sample_count_ = 0;                                      // 采样计数器
-  static constexpr int kGroundPlaneInitDelay = 100;            // 地平面初始化延迟采样次数
+  static constexpr int kGroundPlaneInitDelay = 20;             // 地平面初始化延迟采样次数（terrain cache 5Hz，20次约4秒）
   bool ground_plane_initialized_ = false;                     // 地平面是否已初始化
 };
 
