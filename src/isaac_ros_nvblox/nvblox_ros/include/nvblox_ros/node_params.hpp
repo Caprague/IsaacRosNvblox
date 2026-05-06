@@ -294,6 +294,15 @@ constexpr Param<float>::Description kTerrainCacheZOffsetParamDesc{
   "terrain_cache_z_offset", 0.5f,
   "Z-offset above robot base for ray casting origin in terrain cache sampling (meters)."};
 
+// ======= GROUND PLANE INITIALIZATION PARAMS =======
+constexpr Param<int>::Description kGroundPlaneInitDelayParamDesc{
+  "ground_plane_init_delay", 10,
+  "Number of terrain cache samples before ground plane initialization (at 5Hz cache rate, 10 = ~2s)."};
+
+constexpr Param<float>::Description kGroundPlaneHeightOffsetParamDesc{
+  "ground_plane_height_offset", -0.12f,
+  "Height offset below robot base for virtual ground plane initialization (meters, negative = below)."};
+
 // ======= LOCOMOTION HEIGHT SCAN PARAMS =======
 constexpr Param<float>::Description kLocomotionHeightScanRangeXParamDesc{
   "locomotion_height_scan_range_x", 1.6f,
@@ -451,6 +460,10 @@ public:
   Param<float> terrain_cache_update_rate_hz{kTerrainCacheUpdateRateHzParamDesc};
   Param<float> terrain_cache_max_casting_depth{kTerrainCacheMaxCastingDepthParamDesc};
   Param<float> terrain_cache_z_offset{kTerrainCacheZOffsetParamDesc};
+
+  // ======= GROUND PLANE INITIALIZATION PARAMS =======
+  Param<int> ground_plane_init_delay{kGroundPlaneInitDelayParamDesc};
+  Param<float> ground_plane_height_offset{kGroundPlaneHeightOffsetParamDesc};
 
   // ======= LOCOMOTION HEIGHT SCAN PARAMS (high-freq local query) =======
   Param<float> locomotion_height_scan_range_x{kLocomotionHeightScanRangeXParamDesc};

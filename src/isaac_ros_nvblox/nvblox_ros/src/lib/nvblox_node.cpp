@@ -98,6 +98,8 @@ NvbloxNode::NvbloxNode(
     params_.locomotion_height_scan_y_offset.get(),
     params_.locomotion_height_scan_z_offset.get(),
     params_.locomotion_height_scan_max_casting_depth.get(),
+    params_.ground_plane_init_delay.get(),
+    params_.ground_plane_height_offset.get(),
     this);
 
   RCLCPP_INFO_STREAM(

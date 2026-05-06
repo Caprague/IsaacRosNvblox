@@ -48,7 +48,7 @@ public:
     const float exclusion_height_m, const float exclusion_radius_m,
     rclcpp::Node * node);
 
-  /// Full constructor with locomotion scan parameters.
+  /// Full constructor with locomotion scan and ground plane parameters.
   ///
   /// @param mapping_type Mapping type, used to determine which topics to advertise
   /// @param min_tsdf_weight Min weight for visualized TSDF voxels
@@ -61,6 +61,8 @@ public:
   /// @param locomotion_y_offset Y-axis offset of locomotion scan grid center (meters)
   /// @param locomotion_z_offset Z-offset above robot base for ray casting origin (meters)
   /// @param locomotion_max_casting_depth Maximum vertical ray casting depth (meters)
+  /// @param ground_plane_init_delay Number of samples before ground plane init
+  /// @param ground_plane_height_offset Height offset for virtual ground plane (meters, negative=below)
   /// @param node ROS node
   LayerPublisher(
     const MappingType mapping_type, const float min_tsdf_weight,
@@ -68,7 +70,9 @@ public:
     const float locomotion_range_x, const float locomotion_range_y,
     const float locomotion_resolution, const float locomotion_x_offset,
     const float locomotion_y_offset, const float locomotion_z_offset,
-    const float locomotion_max_casting_depth, rclcpp::Node * node);
+    const float locomotion_max_casting_depth,
+    const int ground_plane_init_delay, const float ground_plane_height_offset,
+    rclcpp::Node * node);
 
   /// Serialize and publish all layers that have active subscribers
   ///

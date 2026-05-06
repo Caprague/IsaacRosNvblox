@@ -760,8 +760,8 @@ bool CudaVerticalRayCaster::initializeGroundPlane(TsdfLayer& tsdf_layer,
   // 获取机器人位置
   Vector3f robot_position = robot_pose.translation();
   
-  // 计算地平面高度（机器人下方0.12m处）
-  const float ground_height = robot_position.z() - 0.12f;
+  // 计算地平面高度（使用参数化的高度偏移量）
+  const float ground_height = robot_position.z() + ground_plane_height_offset_;
   const float voxel_size = tsdf_layer.voxel_size();
   const float half_size = 1.0f;  // 2m x 2m，半边长为1m
   
@@ -840,8 +840,8 @@ bool CudaVerticalRayCaster::initializeGroundPlane(TsdfLayer& tsdf_layer,
   ground_plane_initialized_ = true;
   
   RCLCPP_INFO(rclcpp::get_logger("CudaVerticalRayCaster"),
-              "Ground plane initialized at height %.3f m (after %d samples)",
-              ground_height, sample_count_);
+              "Ground plane initialized at height %.3f m (offset=%.3f m, after %d samples, delay=%d)",
+              ground_height, ground_plane_height_offset_, sample_count_, ground_plane_init_delay_);
   
   return true;
 }

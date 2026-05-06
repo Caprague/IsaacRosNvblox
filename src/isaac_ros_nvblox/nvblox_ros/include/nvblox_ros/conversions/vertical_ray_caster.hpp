@@ -119,7 +119,7 @@ public:
    * @return true 如果尚未初始化且采样次数已达到延迟阈值
    */
   bool needsGroundPlaneInit() const {
-    return !ground_plane_initialized_ && sample_count_ >= kGroundPlaneInitDelay;
+    return !ground_plane_initialized_ && sample_count_ >= ground_plane_init_delay_;
   }
 
   /**
@@ -127,6 +127,22 @@ public:
    */
   void markGroundPlaneInitialized() {
     ground_plane_initialized_ = true;
+  }
+
+  /**
+   * @brief 设置地平面初始化延迟采样次数
+   * @param delay 延迟采样次数
+   */
+  void setGroundPlaneInitDelay(int delay) {
+    ground_plane_init_delay_ = delay;
+  }
+
+  /**
+   * @brief 设置地平面高度偏移量
+   * @param offset 高度偏移量（米，负值表示低于机器人基座）
+   */
+  void setGroundPlaneHeightOffset(float offset) {
+    ground_plane_height_offset_ = offset;
   }
 
 private:
@@ -156,7 +172,8 @@ private:
 
   // 地平面初始化参数
   int sample_count_ = 0;                                      // 采样计数器
-  static constexpr int kGroundPlaneInitDelay = 20;             // 地平面初始化延迟采样次数（terrain cache 5Hz，20次约4秒）
+  int ground_plane_init_delay_ = 10;                          // 地平面初始化延迟采样次数（可由ROS参数设置）
+  float ground_plane_height_offset_ = -0.12f;                 // 地平面高度偏移量（米，负值=低于机器人基座）
   bool ground_plane_initialized_ = false;                     // 地平面是否已初始化
 };
 

@@ -927,7 +927,7 @@ LayerPublisher::LayerPublisher(
   rclcpp::Node * node)
 : LayerPublisher(
     mapping_type, min_tsdf_weight, exclusion_height_m, exclusion_radius_m,
-    1.6f, 1.0f, 0.1f, 0.0f, 0.0f, 0.5f, 3.0f, node)
+    1.6f, 1.0f, 0.1f, 0.0f, 0.0f, 0.5f, 3.0f, 10, -0.12f, node)
 {
 }
 
@@ -943,6 +943,8 @@ LayerPublisher::LayerPublisher(
   const float locomotion_y_offset,
   const float locomotion_z_offset,
   const float locomotion_max_casting_depth,
+  const int ground_plane_init_delay,
+  const float ground_plane_height_offset,
   rclcpp::Node * node)
 : min_tsdf_weight_(min_tsdf_weight),
   exclusion_height_m_(exclusion_height_m),
@@ -1018,6 +1020,8 @@ LayerPublisher::LayerPublisher(
 
   // 初始化 CUDA 垂直光线投射采样器
   ray_caster_ = std::make_unique<conversions::CudaVerticalRayCaster>(3.0f);
+  ray_caster_->setGroundPlaneInitDelay(ground_plane_init_delay);
+  ray_caster_->setGroundPlaneHeightOffset(ground_plane_height_offset);
 }
 
 

@@ -20,8 +20,8 @@
     integrate_lidar_rate_hz: 15.0
 
     # --- Height scan thread rate (dedicated 50Hz thread) ---
-    publish_locomotion_height_scan_rate_hz: 50.0
-    publish_navigation_height_scan_rate_hz: 20.0
+    publish_locomotion_height_scan_rate_hz: 25.0
+    publish_navigation_height_scan_rate_hz: 10.0
     enable_heightscan_stats_logging: true
 
     # --- Terrain cache params (low-freq large-area sampling, 5Hz default) ---
@@ -31,6 +31,10 @@
     terrain_cache_update_rate_hz: 5.0
     terrain_cache_max_casting_depth: 3.0
     terrain_cache_z_offset: 0.5
+
+    # --- Ground plane initialization params ---
+    ground_plane_init_delay: 10
+    ground_plane_height_offset: -0.12
 
     # --- Locomotion height scan params (high-freq local query, default 1.6x1.0m @ 0.1m) ---
     locomotion_height_scan_range_x: 1.6

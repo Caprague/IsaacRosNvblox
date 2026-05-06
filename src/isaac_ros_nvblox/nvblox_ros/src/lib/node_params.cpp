@@ -175,6 +175,10 @@ void initializeNvbloxNodeParams(
   initParam<float>(node, &params->terrain_cache_max_casting_depth, parameter_tree);
   initParam<float>(node, &params->terrain_cache_z_offset, parameter_tree);
 
+  // Ground plane initialization params
+  initParam<int>(node, &params->ground_plane_init_delay, parameter_tree);
+  initParam<float>(node, &params->ground_plane_height_offset, parameter_tree);
+
   // Locomotion height scan params
   initParam<float>(node, &params->locomotion_height_scan_range_x, parameter_tree);
   initParam<float>(node, &params->locomotion_height_scan_range_y, parameter_tree);
