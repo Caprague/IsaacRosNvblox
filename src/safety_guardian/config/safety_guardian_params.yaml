@@ -1,0 +1,73 @@
+# SPDX-FileCopyrightText: NVIDIA CORPORATION & AFFILIATES
+# Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+# http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+#
+# SPDX-License-Identifier: Apache-2.0
+
+safety_guardian_node:
+  ros__parameters:
+    # ========== VSLAM监控参数 ==========
+
+    # VSLAM超时阈值（秒）
+    # 如果VSLAM更新间隔超过此值，判定为不安全
+    vslam_timeout_threshold: 0.5
+
+    # 位姿变化阈值（米）
+    # 如果两次位姿之间的欧氏距离超过此值，判定为不安全
+    vslam_position_threshold: 1.0
+
+    # 是否使用TF获取位姿
+    # true: 从TF树查询 map/odom -> base_link 变换
+    # false: 从话题订阅位姿消息（暂未实现）
+    vslam_use_tf: true
+
+    # 备选位姿话题（当 vslam_use_tf 为 false 时使用）
+    vslam_pose_topic: "/visual_slam/tracking/vo_pose"
+
+    # ========== 高程频率监测参数（仅供参考，不关联安全状态） ==========
+
+    # 采样校准时长（秒）
+    # 启动后先采集这段时间的消息，自动计算基准频率
+    elevation_calibration_duration: 3.0
+
+    # 频率容差比例（0~1）
+    # 实测频率低于 基准频率*(1-容差) 时标记为黄色警告
+    # 超时阈值自动取 1个周期 = 1/基准频率
+    elevation_frequency_tolerance: 0.2
+
+    # ========== 安全状态发布参数 ==========
+
+    # 安全状态发布频率（Hz）
+    # 安全状态话题 /safety_guardian/status 的发布频率
+    status_publish_rate: 10.0
+
+    # ========== 诊断信息发布参数 ==========
+
+    # 是否发布诊断信息
+    # true: 发布 /safety_guardian/diagnostics 话题
+    # false: 不发布诊断信息
+    enable_diagnostics: true
+
+    # 诊断信息发布频率（Hz）
+    diagnostics_rate: 1.0
+
+    # ========== TF参数 ==========
+
+    # 全局坐标系
+    # 通常为 "map" 或 "odom"
+    global_frame: "odom_horizontal"
+
+    # 机器人基座坐标系
+    # 通常为 "base_link"
+    base_frame: "base_link"
