@@ -98,6 +98,7 @@ NvbloxNode::NvbloxNode(
     params_.locomotion_height_scan_y_offset.get(),
     params_.locomotion_height_scan_z_offset.get(),
     params_.locomotion_height_scan_max_casting_depth.get(),
+    params_.locomotion_height_scan_output_z_offset.get(),
     params_.ground_plane_init_delay.get(),
     params_.ground_plane_height_offset.get(),
     this);
@@ -1415,35 +1416,6 @@ void NvbloxNode::decayTsdf()
                           "NvbloxNode::decayTsdf() - rob_base_pose_ lookup failed");
     static_mapper_->decayTsdf();
   }
-}
-
-void NvbloxNode::publishLocomotionHeightScan()
-{
-  timing::Timer publish_locomotion_height_scan_timer("ros/publish_locomotion_height_scan");
-
-  // Find the transform used for exclusing blocks far from the robot
-  Transform T_L_C;
-  if (!transformer_.lookupTransformToGlobalFrame(
-      params_.map_clearing_frame_id,
-      rclcpp::Time(0), &T_L_C))
-  {
-    RCLCPP_INFO_STREAM_THROTTLE(
-      get_logger(), *get_clock(),
-      kTimeBetweenDebugMessagesMs,
-      "Lookup transform failed for frame "
-        << params_.map_clearing_frame_id.get()
-        << ". Layer pointclouds not published");
-    return;
-  }
-
-  const std::string frame_id = params_.global_frame.get();
-  const rclcpp::Time timestamp = get_clock()->now();
-  layer_publisher_->publishLocomotionHeightScan(
-    T_L_C, frame_id, timestamp, 
-    params_.layer_streamer_bandwidth_limit_mbps, 
-    static_mapper_, dynamic_mapper_,
-    get_logger(),
-    *cuda_stream_);
 }
 
 void NvbloxNode::publishNavigationHeightScan()

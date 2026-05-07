@@ -71,6 +71,7 @@ public:
     const float locomotion_resolution, const float locomotion_x_offset,
     const float locomotion_y_offset, const float locomotion_z_offset,
     const float locomotion_max_casting_depth,
+    const float locomotion_output_z_offset,
     const int ground_plane_init_delay, const float ground_plane_height_offset,
     rclcpp::Node * node);
 
@@ -87,17 +88,6 @@ public:
     rclcpp::Time timestamp, const float layer_streamer_bandwidth_limit_mbps,
     std::shared_ptr<Mapper> static_mapper,
     std::shared_ptr<Mapper> dynamic_mapper, const rclcpp::Logger & logger);
-
-  /// Serialize and publish mesh layer and height scan data, when any have active subscribers
-  /// @param height_data_out Output: robot-relative height values for stats logging by caller
-  void publishLocomotionHeightScan(
-    const Transform & T_L_C, const std::string & frame_id,
-    rclcpp::Time timestamp, const float layer_streamer_bandwidth_limit_mbps,
-    std::shared_ptr<Mapper> static_mapper,
-    std::shared_ptr<Mapper> dynamic_mapper,
-    const rclcpp::Logger & logger,
-    const CudaStream& cuda_stream,
-    std::vector<float>* height_data_out = nullptr);
 
   /// Publish a cached/compensated locomotion height scan when TSDF lock is contended.
   /// @param height_data Compensated robot-relative height values
@@ -175,16 +165,6 @@ private:
     const float block_size, const std::string & frame_id,
     const rclcpp::Time & timestamp, const rclcpp::Logger & logger);
 
-  /// Implementation of publishLocomotionHeightScan
-  /// @param height_data_out Output: robot-relative height values
-  void publishLocomotionHeightScan_impl(
-    TsdfLayer& tsdf_layer,
-    const Transform& base_pose,
-    const rclcpp::Time& timestamp,
-    const rclcpp::Logger& logger,
-    const CudaStream& cuda_stream,
-    std::vector<float>* height_data_out = nullptr);
-  
   /// Implementation of publishNavigationHeightScan
   void publishNavigationHeightScan_impl(
     TsdfLayer& tsdf_layer,  // 改为非const，因为可能需要初始化地平面
@@ -208,6 +188,7 @@ private:
   float locomotion_y_offset_ = 0.0f;
   float locomotion_z_offset_ = 0.5f;
   float locomotion_max_casting_depth_ = 3.0f;
+  float locomotion_output_z_offset_ = -0.11f;  // 仅应用到话题输出数据
   int locomotion_x_steps_ = 17;
   int locomotion_y_steps_ = 11;
 
@@ -234,9 +215,6 @@ private:
     dynamic_occupancy_layer_publisher_marker_;
 
   // 全局采样点坐标及高程
-  std::vector<float> locomotion_sample_points_x;
-  std::vector<float> locomotion_sample_points_y;
-  std::vector<float> locomotion_sample_points_z;
   std::vector<float> navigation_sample_points_x;
   std::vector<float> navigation_sample_points_y;
   std::vector<float> navigation_sample_points_z;

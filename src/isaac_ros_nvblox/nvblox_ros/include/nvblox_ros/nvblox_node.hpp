@@ -186,7 +186,6 @@ public:
   void decayTsdf();
 
   // Publish height scans for locomotion and navigation
-  void publishLocomotionHeightScan();
   void publishNavigationHeightScan();
 
 protected:

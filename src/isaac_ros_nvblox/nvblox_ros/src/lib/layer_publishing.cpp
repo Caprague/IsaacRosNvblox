@@ -588,30 +588,6 @@ void LayerPublisher::publishMesh(
   }
 }
 
-void LayerPublisher::publishLocomotionHeightScan(
-  const Transform& T_L_C, const std::string& frame_id, rclcpp::Time timestamp,
-  const float layer_streamer_bandwidth_limit_mbps,
-  std::shared_ptr<Mapper> static_mapper,
-  std::shared_ptr<Mapper> dynamic_mapper,
-  const rclcpp::Logger& logger,
-  const CudaStream& cuda_stream,
-  std::vector<float>* height_data_out) 
-{
-  CHECK_NOTNULL(static_mapper);
-  LayerTypeBitMask layers_to_stream = getLayersToStreamBitMask();
-  if (layers_to_stream & LayerType::kHeightScan) {
-    timing::Timer publish_timer("ros/publish_locomotion_height_scan");
-    publishLocomotionHeightScan_impl(
-      static_mapper->tsdf_layer(),
-      T_L_C, 
-      timestamp,
-      logger, 
-      cuda_stream,
-      height_data_out
-    );
-  }
-}
-
 void LayerPublisher::publishCachedLocomotionHeightScan(
   const std::vector<float>& height_data,
   const std::string& frame_id,
@@ -654,8 +630,14 @@ void LayerPublisher::publishLocomotionHeightScanData(
   const std::string& frame_id,
   const rclcpp::Time& timestamp)
 {
-  // Delegate to the existing cached-publish implementation
-  publishCachedLocomotionHeightScan(height_data, frame_id, timestamp);
+  // 应用 output_z_offset 到话题数据，再委托给缓存发布实现
+  std::vector<float> offset_data = height_data;
+  if (std::abs(locomotion_output_z_offset_) > 1e-6f) {
+    for (auto& val : offset_data) {
+      val += locomotion_output_z_offset_;
+    }
+  }
+  publishCachedLocomotionHeightScan(offset_data, frame_id, timestamp);
 }
 
 void LayerPublisher::publishLocomotionHeightScanPointCloud(
@@ -738,102 +720,6 @@ void LayerPublisher::publishNavigationHeightScan(
       logger, 
       cuda_stream
     );
-  }
-}
-
-void LayerPublisher::publishLocomotionHeightScan_impl(
-  TsdfLayer& tsdf_layer,
-  const Transform& base_pose,
-  const rclcpp::Time& timestamp,
-  const rclcpp::Logger& logger,
-  const CudaStream& cuda_stream,
-  std::vector<float>* height_data_out) 
-{
-  // 采样参数（从构造参数传入，避免硬编码）
-  const float range_x = locomotion_range_x_;
-  const float range_y = locomotion_range_y_;
-  const float resolution = locomotion_resolution_;
-  const float x_offset = locomotion_x_offset_;
-  const float y_offset = locomotion_y_offset_;
-  const float z_offset = locomotion_z_offset_;
-  const float max_casting_depth = locomotion_max_casting_depth_;
-  const int x_steps = locomotion_x_steps_;
-  const int y_steps = locomotion_y_steps_;
-  
-  // 存储网格点高程采样结果
-  locomotion_sample_points_x.clear();
-  locomotion_sample_points_y.clear();
-  locomotion_sample_points_z.clear();
-
-  // 进行体素栅格高程采样，获取采样结果
-  // 使用复用的 ray_caster_ 实例，避免频繁创建销毁
-  ray_caster_->setConfidenceWeightThreshold(3.0f);
-  ray_caster_->sampleTerrainPoints(
-    // 采样点坐标(采样结果)
-    locomotion_sample_points_x,
-    locomotion_sample_points_y,
-    locomotion_sample_points_z,
-    // Tsdf体素地图
-    tsdf_layer,
-    // 采样参数
-    base_pose,
-    range_x,
-    range_y,
-    resolution,
-    x_steps,
-    y_steps,
-    x_offset,
-    y_offset,
-    z_offset,
-    max_casting_depth,
-    // cuda stream 流
-    cuda_stream);
-  
-  // 机器人base_link到地面高度差
-  Vector3f robot_position = base_pose.translation();
-  std::vector<float> height_scam_z_data = locomotion_sample_points_z;
-  float robot_z = robot_position.z();
-  for (auto& hs_z : height_scam_z_data) {
-    hs_z = robot_z - hs_z;
-  }
-  // 发布高程采样结果(仅z值) - 机器人base_link到地面高度差
-  std_msgs::msg::Float32MultiArray locomotion_height_scan_msg;
-  locomotion_height_scan_msg.layout.dim.clear();
-  auto dim_x = std_msgs::msg::MultiArrayDimension();
-  dim_x.label = "x";
-  dim_x.size = x_steps;
-  dim_x.stride = x_steps * y_steps;  // 从起点到下一行的元素数
-  locomotion_height_scan_msg.layout.dim.push_back(dim_x);
-  auto dim_y = std_msgs::msg::MultiArrayDimension();
-  dim_y.label = "y";
-  dim_y.size = y_steps;
-  dim_y.stride = y_steps;  // 从行起点到下一个列元素
-  locomotion_height_scan_msg.layout.dim.push_back(dim_y);
-  locomotion_height_scan_msg.data = height_scam_z_data;
-  locomotion_height_scan_msg.layout.data_offset = 0;  // 数据起始偏移
-  locomotion_hs_publisher_->publish(locomotion_height_scan_msg);
-
-  // 可视化高程采样结果(三维Rviz)
-  sensor_msgs::msg::PointCloud2 locomotion_hs_pc_msg;
-  locomotion_hs_pc_msg.header.frame_id = "odom_horizontal";
-  locomotion_hs_pc_msg.header.stamp = rclcpp::Clock().now();
-  sensor_msgs::PointCloud2Modifier modifier(locomotion_hs_pc_msg);
-  modifier.setPointCloud2FieldsByString(1, "xyz");
-  modifier.resize(locomotion_sample_points_x.size());
-  sensor_msgs::PointCloud2Iterator<float> iter_x(locomotion_hs_pc_msg, "x");
-  sensor_msgs::PointCloud2Iterator<float> iter_y(locomotion_hs_pc_msg, "y");
-  sensor_msgs::PointCloud2Iterator<float> iter_z(locomotion_hs_pc_msg, "z");
-  for (size_t i = 0; i < locomotion_sample_points_x.size(); ++i, ++iter_x, ++iter_y, ++iter_z) 
-  {
-      *iter_x = locomotion_sample_points_x[i];
-      *iter_y = locomotion_sample_points_y[i];
-      *iter_z = locomotion_sample_points_z[i];
-  }
-  locomotion_hs_pc_publisher_->publish(locomotion_hs_pc_msg);
-
-  // 输出高程数据供调用方记录统计
-  if (height_data_out) {
-    *height_data_out = height_scam_z_data;
   }
 }
 
@@ -927,7 +813,7 @@ LayerPublisher::LayerPublisher(
   rclcpp::Node * node)
 : LayerPublisher(
     mapping_type, min_tsdf_weight, exclusion_height_m, exclusion_radius_m,
-    1.6f, 1.0f, 0.1f, 0.0f, 0.0f, 0.5f, 3.0f, 10, -0.12f, node)
+    1.6f, 1.0f, 0.1f, 0.0f, 0.0f, 0.5f, 3.0f, -0.11f, 10, -0.12f, node)
 {
 }
 
@@ -943,6 +829,7 @@ LayerPublisher::LayerPublisher(
   const float locomotion_y_offset,
   const float locomotion_z_offset,
   const float locomotion_max_casting_depth,
+  const float locomotion_output_z_offset,
   const int ground_plane_init_delay,
   const float ground_plane_height_offset,
   rclcpp::Node * node)
@@ -956,6 +843,7 @@ LayerPublisher::LayerPublisher(
   locomotion_y_offset_(locomotion_y_offset),
   locomotion_z_offset_(locomotion_z_offset),
   locomotion_max_casting_depth_(locomotion_max_casting_depth),
+  locomotion_output_z_offset_(locomotion_output_z_offset),
   locomotion_x_steps_(static_cast<int>(locomotion_range_x / locomotion_resolution) + 1),
   locomotion_y_steps_(static_cast<int>(locomotion_range_y / locomotion_resolution) + 1)
 {
