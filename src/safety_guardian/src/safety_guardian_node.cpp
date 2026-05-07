@@ -99,6 +99,8 @@ SafetyGuardianNode::SafetyGuardianNode()
   this->elevation_calibration_count_ = 0;
   this->elevation_received_count_ = 0;
   this->elevation_calibrated_ = false;
+  this->last_elevation_time_ = this->get_clock()->now();
+  this->elevation_calibration_start_ = this->get_clock()->now();
 
   // ========== 初始化统计信息 ==========
 
@@ -109,21 +111,23 @@ SafetyGuardianNode::SafetyGuardianNode()
   this->node_start_time_ = this->get_clock()->now();
 
   // ========== 创建发布器 ==========
+  auto qos_pub = rclcpp::SystemDefaultsQoS();
+  qos_pub.keep_last(10); 
 
   this->safety_status_pub_ = this->create_publisher<std_msgs::msg::Bool>(
-    "/safety_guardian/status", 10);
+    "/safety_guardian/status", qos_pub);
 
   if (this->enable_diagnostics_) {
     this->diagnostics_pub_ = this->create_publisher<diagnostic_msgs::msg::DiagnosticArray>(
-      "/safety_guardian/diagnostics", 10);
+      "/safety_guardian/diagnostics", qos_pub);
   }
 
   // ========== 创建订阅器 ==========
+  auto qos_sub = rclcpp::SystemDefaultsQoS();
 
-  auto qos = rclcpp::SensorDataQoS();
   this->elevation_sub_ = this->create_subscription<std_msgs::msg::Float32MultiArray>(
     "/nvblox_node/locomotion_height_scan",
-    qos,
+    qos_sub,
     std::bind(&SafetyGuardianNode::elevationCallback, this, std::placeholders::_1)
   );
 
@@ -705,6 +709,7 @@ void SafetyGuardianNode::monitorVSLAMStatus()
                           "TF lookup failed, but timeout not reached yet: %.2f / %.2f s",
                           time_since_update, this->vslam_timeout_threshold_);
     }
+    this->updateSafetyStatus(this->vslam_safe_);
     return;
   }
 

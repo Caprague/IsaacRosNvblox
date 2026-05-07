@@ -34,7 +34,7 @@
 
     # --- Ground plane initialization params ---
     ground_plane_init_delay: 10
-    ground_plane_height_offset: -0.14
+    ground_plane_height_offset: -0.12
 
     # --- Locomotion height scan params (high-freq local query, default 1.6x1.0m @ 0.1m) ---
     locomotion_height_scan_range_x: 1.6
@@ -46,7 +46,7 @@
     locomotion_height_scan_max_casting_depth: 3.0
     # Z轴偏移量，仅应用到 locomotion_height_scan 话题发布的输出数据上
     # 不影响可视化点云和内部采样计算，默认 -0.11m
-    locomotion_height_scan_output_z_offset: -0.11
+    locomotion_height_scan_output_z_offset: -0.05
 
     # --- Maintenance thread rates ---
     # Thread wake-up rate = max(decay_tsdf, decay_dynamic_occupancy, clear_map_outside_radius)
