@@ -332,9 +332,10 @@ constexpr Param<float>::Description kLocomotionHeightScanMaxCastingDepthParamDes
   "locomotion_height_scan_max_casting_depth", 3.0f,
   "Maximum vertical ray casting depth for locomotion height scan sampling (meters)."};
 
-constexpr Param<float>::Description kLocomotionHeightScanOutputZOffsetParamDesc{
-  "locomotion_height_scan_output_z_offset", -0.11f,
-  "Z-axis offset applied only to the locomotion_height_scan topic output data, not affecting visualization or internal computation (meters)."};
+constexpr Param<float>::Description kLocomotionHeightScanExpectedInitialHeightParamDesc{
+  "locomotion_height_scan_expected_initial_height", 0.28f,
+  "Expected distance from robot base to ground at the center of the height scan grid (meters). "
+  "Used for online drift compensation: drift = expected - measured_center_mean."};
 
 // ======= OUTPUT PARAMS =======
 constexpr Param<float>::Description kEsdfAndGradientsUnobservedValueParamDesc{
@@ -477,7 +478,7 @@ public:
   Param<float> locomotion_height_scan_y_offset{kLocomotionHeightScanYOffsetParamDesc};
   Param<float> locomotion_height_scan_z_offset{kLocomotionHeightScanZOffsetParamDesc};
   Param<float> locomotion_height_scan_max_casting_depth{kLocomotionHeightScanMaxCastingDepthParamDesc};
-  Param<float> locomotion_height_scan_output_z_offset{kLocomotionHeightScanOutputZOffsetParamDesc};
+  Param<float> locomotion_height_scan_expected_initial_height{kLocomotionHeightScanExpectedInitialHeightParamDesc};
 };
 
 /// Container for all node params of the fuser node.

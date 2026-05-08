@@ -23,6 +23,7 @@
 #include <vector>
 #include <Eigen/Core>
 #include <nvblox/core/cuda_stream.h>
+#include <atomic>
 
 namespace nvblox {
 namespace conversions {
@@ -130,6 +131,14 @@ public:
   }
 
   /**
+   * @brief 查询地平面是否已初始化（线程安全）
+   * @return true 如果地平面已初始化完成
+   */
+  bool isGroundPlaneInitialized() const {
+    return ground_plane_initialized_.load();
+  }
+
+  /**
    * @brief 设置地平面初始化延迟采样次数
    * @param delay 延迟采样次数
    */
@@ -174,7 +183,7 @@ private:
   int sample_count_ = 0;                                      // 采样计数器
   int ground_plane_init_delay_ = 10;                          // 地平面初始化延迟采样次数（可由ROS参数设置）
   float ground_plane_height_offset_ = -0.12f;                 // 地平面高度偏移量（米，负值=低于机器人基座）
-  bool ground_plane_initialized_ = false;                     // 地平面是否已初始化
+  std::atomic<bool> ground_plane_initialized_{false};             // 地平面是否已初始化
 };
 
 }  // namespace conversions

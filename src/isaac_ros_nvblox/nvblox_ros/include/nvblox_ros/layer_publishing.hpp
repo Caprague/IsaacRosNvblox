@@ -21,6 +21,7 @@
 #include <memory>
 #include <string>
 #include <vector>
+#include <chrono>
 
 #include <rclcpp/rclcpp.hpp>
 #include <sensor_msgs/point_cloud2_iterator.hpp>
@@ -61,6 +62,7 @@ public:
   /// @param locomotion_y_offset Y-axis offset of locomotion scan grid center (meters)
   /// @param locomotion_z_offset Z-offset above robot base for ray casting origin (meters)
   /// @param locomotion_max_casting_depth Maximum vertical ray casting depth (meters)
+  /// @param expected_initial_height Expected base-to-ground distance at scan center (meters)
   /// @param ground_plane_init_delay Number of samples before ground plane init
   /// @param ground_plane_height_offset Height offset for virtual ground plane (meters, negative=below)
   /// @param node ROS node
@@ -71,7 +73,7 @@ public:
     const float locomotion_resolution, const float locomotion_x_offset,
     const float locomotion_y_offset, const float locomotion_z_offset,
     const float locomotion_max_casting_depth,
-    const float locomotion_output_z_offset,
+    const float expected_initial_height,
     const int ground_plane_init_delay, const float ground_plane_height_offset,
     rclcpp::Node * node);
 
@@ -188,7 +190,13 @@ private:
   float locomotion_y_offset_ = 0.0f;
   float locomotion_z_offset_ = 0.5f;
   float locomotion_max_casting_depth_ = 3.0f;
-  float locomotion_output_z_offset_ = -0.11f;  // 仅应用到话题输出数据
+
+  // ---- Locomotion height scan online drift compensation ----
+  float expected_initial_height_ = 0.28f;
+
+  /// Compute drift from center grid points assuming base-to-ground distance is fixed.
+  float computeCenterDrift(const std::vector<float>& height_data) const;
+
   int locomotion_x_steps_ = 17;
   int locomotion_y_steps_ = 11;
 

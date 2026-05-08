@@ -187,7 +187,7 @@ void initializeNvbloxNodeParams(
   initParam<float>(node, &params->locomotion_height_scan_y_offset, parameter_tree);
   initParam<float>(node, &params->locomotion_height_scan_z_offset, parameter_tree);
   initParam<float>(node, &params->locomotion_height_scan_max_casting_depth, parameter_tree);
-  initParam<float>(node, &params->locomotion_height_scan_output_z_offset, parameter_tree);
+  initParam<float>(node, &params->locomotion_height_scan_expected_initial_height, parameter_tree);
 }
 
 void initializeFuserNodeParams(

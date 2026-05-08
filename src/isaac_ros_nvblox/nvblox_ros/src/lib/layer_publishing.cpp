@@ -625,19 +625,57 @@ void LayerPublisher::publishCachedLocomotionHeightScan(
   locomotion_hs_publisher_->publish(msg);
 }
 
+float LayerPublisher::computeCenterDrift(const std::vector<float>& height_data) const
+{
+  if (locomotion_x_steps_ < 3 || locomotion_y_steps_ < 3) {
+    return 0.0f;
+  }
+
+  const int cx = locomotion_x_steps_ / 2;
+  const int cy = locomotion_y_steps_ / 2;
+  constexpr int kHalfWindow = 1;  // 3x3 center region
+
+  double sum = 0.0;
+  int count = 0;
+  for (int y = cy - kHalfWindow; y <= cy + kHalfWindow; ++y) {
+    for (int x = cx - kHalfWindow; x <= cx + kHalfWindow; ++x) {
+      if (y < 0 || y >= locomotion_y_steps_ || x < 0 || x >= locomotion_x_steps_) {
+        continue;
+      }
+      const float val = height_data[y * locomotion_x_steps_ + x];
+      if (std::isfinite(val)) {
+        sum += static_cast<double>(val);
+        ++count;
+      }
+    }
+  }
+
+  if (count == 0) {
+    return 0.0f;
+  }
+  const float mean = static_cast<float>(sum / static_cast<double>(count));
+  return expected_initial_height_ - mean;
+}
+
 void LayerPublisher::publishLocomotionHeightScanData(
   const std::vector<float>& height_data,
   const std::string& frame_id,
   const rclcpp::Time& timestamp)
 {
-  // 应用 output_z_offset 到话题数据，再委托给缓存发布实现
-  std::vector<float> offset_data = height_data;
-  if (std::abs(locomotion_output_z_offset_) > 1e-6f) {
-    for (auto& val : offset_data) {
-      val += locomotion_output_z_offset_;
+  const float drift = computeCenterDrift(height_data);
+
+  std::vector<float> compensated_data = height_data;
+  if (std::abs(drift) > 1e-6f) {
+    for (auto& val : compensated_data) {
+      if (std::isfinite(val)) {
+        val += drift;
+      }
     }
+    RCLCPP_DEBUG(rclcpp::get_logger("LayerPublisher"),
+      "Applied center drift compensation: drift=%.4fm", drift);
   }
-  publishCachedLocomotionHeightScan(offset_data, frame_id, timestamp);
+
+  publishCachedLocomotionHeightScan(compensated_data, frame_id, timestamp);
 }
 
 void LayerPublisher::publishLocomotionHeightScanPointCloud(
@@ -813,7 +851,9 @@ LayerPublisher::LayerPublisher(
   rclcpp::Node * node)
 : LayerPublisher(
     mapping_type, min_tsdf_weight, exclusion_height_m, exclusion_radius_m,
-    1.6f, 1.0f, 0.1f, 0.0f, 0.0f, 0.5f, 3.0f, -0.11f, 10, -0.12f, node)
+    1.6f, 1.0f, 0.1f, 0.0f, 0.0f, 0.5f, 3.0f,
+    0.28f,
+    10, -0.12f, node)
 {
 }
 
@@ -829,7 +869,7 @@ LayerPublisher::LayerPublisher(
   const float locomotion_y_offset,
   const float locomotion_z_offset,
   const float locomotion_max_casting_depth,
-  const float locomotion_output_z_offset,
+  const float expected_initial_height,
   const int ground_plane_init_delay,
   const float ground_plane_height_offset,
   rclcpp::Node * node)
@@ -843,7 +883,7 @@ LayerPublisher::LayerPublisher(
   locomotion_y_offset_(locomotion_y_offset),
   locomotion_z_offset_(locomotion_z_offset),
   locomotion_max_casting_depth_(locomotion_max_casting_depth),
-  locomotion_output_z_offset_(locomotion_output_z_offset),
+  expected_initial_height_(expected_initial_height),
   locomotion_x_steps_(static_cast<int>(locomotion_range_x / locomotion_resolution) + 1),
   locomotion_y_steps_(static_cast<int>(locomotion_range_y / locomotion_resolution) + 1)
 {
@@ -910,6 +950,10 @@ LayerPublisher::LayerPublisher(
   ray_caster_ = std::make_unique<conversions::CudaVerticalRayCaster>(3.0f);
   ray_caster_->setGroundPlaneInitDelay(ground_plane_init_delay);
   ray_caster_->setGroundPlaneHeightOffset(ground_plane_height_offset);
+
+  RCLCPP_INFO(rclcpp::get_logger("LayerPublisher"),
+    "Height scan drift compensation enabled: expected_center_height=%.3fm, grid=%dx%d",
+    expected_initial_height_, locomotion_x_steps_, locomotion_y_steps_);
 }
 
 
