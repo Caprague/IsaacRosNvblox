@@ -44,6 +44,7 @@
     locomotion_height_scan_y_offset: 0.0
     locomotion_height_scan_z_offset: 0.5
     locomotion_height_scan_max_casting_depth: 3.0
+    
     # --- Locomotion height scan online drift compensation ---
     # Enable/disable the center-based drift compensation for locomotion height scan.
     locomotion_height_scan_drift_compensation_enabled: true
