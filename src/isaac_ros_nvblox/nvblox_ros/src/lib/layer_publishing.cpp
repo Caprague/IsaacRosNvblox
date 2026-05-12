@@ -662,6 +662,11 @@ void LayerPublisher::publishLocomotionHeightScanData(
   const std::string& frame_id,
   const rclcpp::Time& timestamp)
 {
+  if (!drift_compensation_enabled_) {
+    publishCachedLocomotionHeightScan(height_data, frame_id, timestamp);
+    return;
+  }
+
   const float drift = computeCenterDrift(height_data);
 
   std::vector<float> compensated_data = height_data;
@@ -852,7 +857,7 @@ LayerPublisher::LayerPublisher(
 : LayerPublisher(
     mapping_type, min_tsdf_weight, exclusion_height_m, exclusion_radius_m,
     1.6f, 1.0f, 0.1f, 0.0f, 0.0f, 0.5f, 3.0f,
-    0.28f,
+    true, 0.28f,
     10, -0.12f, node)
 {
 }
@@ -869,6 +874,7 @@ LayerPublisher::LayerPublisher(
   const float locomotion_y_offset,
   const float locomotion_z_offset,
   const float locomotion_max_casting_depth,
+  const bool drift_compensation_enabled,
   const float expected_initial_height,
   const int ground_plane_init_delay,
   const float ground_plane_height_offset,
@@ -883,6 +889,7 @@ LayerPublisher::LayerPublisher(
   locomotion_y_offset_(locomotion_y_offset),
   locomotion_z_offset_(locomotion_z_offset),
   locomotion_max_casting_depth_(locomotion_max_casting_depth),
+  drift_compensation_enabled_(drift_compensation_enabled),
   expected_initial_height_(expected_initial_height),
   locomotion_x_steps_(static_cast<int>(locomotion_range_x / locomotion_resolution) + 1),
   locomotion_y_steps_(static_cast<int>(locomotion_range_y / locomotion_resolution) + 1)

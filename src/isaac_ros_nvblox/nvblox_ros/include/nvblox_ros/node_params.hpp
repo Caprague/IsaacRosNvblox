@@ -332,6 +332,10 @@ constexpr Param<float>::Description kLocomotionHeightScanMaxCastingDepthParamDes
   "locomotion_height_scan_max_casting_depth", 3.0f,
   "Maximum vertical ray casting depth for locomotion height scan sampling (meters)."};
 
+constexpr Param<bool>::Description kLocomotionHeightScanDriftCompensationEnabledParamDesc{
+  "locomotion_height_scan_drift_compensation_enabled", true,
+  "Enable/disable center-based online drift compensation for locomotion height scan."};
+
 constexpr Param<float>::Description kLocomotionHeightScanExpectedInitialHeightParamDesc{
   "locomotion_height_scan_expected_initial_height", 0.28f,
   "Expected distance from robot base to ground at the center of the height scan grid (meters). "
@@ -478,6 +482,7 @@ public:
   Param<float> locomotion_height_scan_y_offset{kLocomotionHeightScanYOffsetParamDesc};
   Param<float> locomotion_height_scan_z_offset{kLocomotionHeightScanZOffsetParamDesc};
   Param<float> locomotion_height_scan_max_casting_depth{kLocomotionHeightScanMaxCastingDepthParamDesc};
+  Param<bool> locomotion_height_scan_drift_compensation_enabled{kLocomotionHeightScanDriftCompensationEnabledParamDesc};
   Param<float> locomotion_height_scan_expected_initial_height{kLocomotionHeightScanExpectedInitialHeightParamDesc};
 };
 

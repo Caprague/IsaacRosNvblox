@@ -45,6 +45,8 @@
     locomotion_height_scan_z_offset: 0.5
     locomotion_height_scan_max_casting_depth: 3.0
     # --- Locomotion height scan online drift compensation ---
+    # Enable/disable the center-based drift compensation for locomotion height scan.
+    locomotion_height_scan_drift_compensation_enabled: true
     # Expected base-to-ground distance at the center of the scan grid.
     # The center 3x3 points are averaged and compared to this value; the difference
     # is applied as a drift compensation to all points in the published height scan.

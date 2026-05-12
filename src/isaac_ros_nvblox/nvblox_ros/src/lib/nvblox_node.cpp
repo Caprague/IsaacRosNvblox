@@ -98,6 +98,7 @@ NvbloxNode::NvbloxNode(
     params_.locomotion_height_scan_y_offset.get(),
     params_.locomotion_height_scan_z_offset.get(),
     params_.locomotion_height_scan_max_casting_depth.get(),
+    params_.locomotion_height_scan_drift_compensation_enabled.get(),
     params_.locomotion_height_scan_expected_initial_height.get(),
     params_.ground_plane_init_delay.get(),
     params_.ground_plane_height_offset.get(),

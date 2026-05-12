@@ -62,6 +62,7 @@ public:
   /// @param locomotion_y_offset Y-axis offset of locomotion scan grid center (meters)
   /// @param locomotion_z_offset Z-offset above robot base for ray casting origin (meters)
   /// @param locomotion_max_casting_depth Maximum vertical ray casting depth (meters)
+  /// @param drift_compensation_enabled Whether to enable center-based drift compensation
   /// @param expected_initial_height Expected base-to-ground distance at scan center (meters)
   /// @param ground_plane_init_delay Number of samples before ground plane init
   /// @param ground_plane_height_offset Height offset for virtual ground plane (meters, negative=below)
@@ -73,6 +74,7 @@ public:
     const float locomotion_resolution, const float locomotion_x_offset,
     const float locomotion_y_offset, const float locomotion_z_offset,
     const float locomotion_max_casting_depth,
+    const bool drift_compensation_enabled,
     const float expected_initial_height,
     const int ground_plane_init_delay, const float ground_plane_height_offset,
     rclcpp::Node * node);
@@ -192,6 +194,7 @@ private:
   float locomotion_max_casting_depth_ = 3.0f;
 
   // ---- Locomotion height scan online drift compensation ----
+  bool drift_compensation_enabled_ = true;
   float expected_initial_height_ = 0.28f;
 
   /// Compute drift from center grid points assuming base-to-ground distance is fixed.
