@@ -22,6 +22,7 @@
 #include <string>
 #include <vector>
 #include <chrono>
+#include <deque>
 
 #include <rclcpp/rclcpp.hpp>
 #include <sensor_msgs/point_cloud2_iterator.hpp>
@@ -64,6 +65,7 @@ public:
   /// @param locomotion_max_casting_depth Maximum vertical ray casting depth (meters)
   /// @param drift_compensation_enabled Whether to enable center-based drift compensation
   /// @param expected_initial_height Expected base-to-ground distance at scan center (meters)
+  /// @param drift_filter_window Sliding window size for drift filtering (1 = no filtering)
   /// @param ground_plane_init_delay Number of samples before ground plane init
   /// @param ground_plane_height_offset Height offset for virtual ground plane (meters, negative=below)
   /// @param node ROS node
@@ -76,6 +78,7 @@ public:
     const float locomotion_max_casting_depth,
     const bool drift_compensation_enabled,
     const float expected_initial_height,
+    const int drift_filter_window,
     const int ground_plane_init_delay, const float ground_plane_height_offset,
     rclcpp::Node * node);
 
@@ -196,6 +199,8 @@ private:
   // ---- Locomotion height scan online drift compensation ----
   bool drift_compensation_enabled_ = true;
   float expected_initial_height_ = 0.28f;
+  int drift_filter_window_ = 10;
+  std::deque<float> drift_history_;
 
   /// Compute drift from center grid points assuming base-to-ground distance is fixed.
   float computeCenterDrift(const std::vector<float>& height_data) const;

@@ -165,6 +165,8 @@ void initializeNvbloxNodeParams(
   initParam<float>(node, &params->publish_locomotion_height_scan_rate_hz, parameter_tree);
   initParam<float>(node, &params->publish_navigation_height_scan_rate_hz, parameter_tree);
   initParam<bool>(node, &params->enable_heightscan_stats_logging, parameter_tree);
+  initParam<float>(node, &params->heightscan_stats_rate_hz, parameter_tree);
+  initStringParam(node, &params->cuvslam_odom_topic, parameter_tree);
   initParam<float>(node, &params->distance_map_local_maintenance, parameter_tree);
 
   // Terrain cache params
@@ -189,6 +191,7 @@ void initializeNvbloxNodeParams(
   initParam<float>(node, &params->locomotion_height_scan_max_casting_depth, parameter_tree);
   initParam<bool>(node, &params->locomotion_height_scan_drift_compensation_enabled, parameter_tree);
   initParam<float>(node, &params->locomotion_height_scan_expected_initial_height, parameter_tree);
+  initParam<int>(node, &params->locomotion_height_scan_drift_filter_window, parameter_tree);
 }
 
 void initializeFuserNodeParams(

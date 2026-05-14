@@ -627,13 +627,14 @@ void LayerPublisher::publishCachedLocomotionHeightScan(
 
 float LayerPublisher::computeCenterDrift(const std::vector<float>& height_data) const
 {
-  if (locomotion_x_steps_ < 3 || locomotion_y_steps_ < 3) {
+  if (locomotion_x_steps_ < 5 || locomotion_y_steps_ < 5) {
     return 0.0f;
   }
 
   const int cx = locomotion_x_steps_ / 2;
   const int cy = locomotion_y_steps_ / 2;
-  constexpr int kHalfWindow = 1;  // 3x3 center region
+  // 5x5 center region: cx-2..cx+2, cy-2..cy+2
+  const int kHalfWindow = 2;
 
   double sum = 0.0;
   int count = 0;
@@ -667,17 +668,33 @@ void LayerPublisher::publishLocomotionHeightScanData(
     return;
   }
 
-  const float drift = computeCenterDrift(height_data);
+  const float raw_drift = computeCenterDrift(height_data);
+
+  // Apply sliding window filter to drift
+  drift_history_.push_back(raw_drift);
+  if (static_cast<int>(drift_history_.size()) > drift_filter_window_) {
+    drift_history_.pop_front();
+  }
+
+  float filtered_drift = 0.0f;
+  if (!drift_history_.empty()) {
+    double sum = 0.0;
+    for (float d : drift_history_) {
+      sum += d;
+    }
+    filtered_drift = static_cast<float>(sum / static_cast<double>(drift_history_.size()));
+  }
 
   std::vector<float> compensated_data = height_data;
-  if (std::abs(drift) > 1e-6f) {
+  if (std::abs(filtered_drift) > 1e-6f) {
     for (auto& val : compensated_data) {
       if (std::isfinite(val)) {
-        val += drift;
+        val += filtered_drift;
       }
     }
     RCLCPP_DEBUG(rclcpp::get_logger("LayerPublisher"),
-      "Applied center drift compensation: drift=%.4fm", drift);
+      "Applied center drift compensation: raw=%.4fm filtered=%.4fm (window=%d)",
+      raw_drift, filtered_drift, static_cast<int>(drift_history_.size()));
   }
 
   publishCachedLocomotionHeightScan(compensated_data, frame_id, timestamp);
@@ -858,6 +875,7 @@ LayerPublisher::LayerPublisher(
     mapping_type, min_tsdf_weight, exclusion_height_m, exclusion_radius_m,
     1.6f, 1.0f, 0.1f, 0.0f, 0.0f, 0.5f, 3.0f,
     true, 0.28f,
+    5,
     10, -0.12f, node)
 {
 }
@@ -876,6 +894,7 @@ LayerPublisher::LayerPublisher(
   const float locomotion_max_casting_depth,
   const bool drift_compensation_enabled,
   const float expected_initial_height,
+  const int drift_filter_window,
   const int ground_plane_init_delay,
   const float ground_plane_height_offset,
   rclcpp::Node * node)
@@ -891,6 +910,7 @@ LayerPublisher::LayerPublisher(
   locomotion_max_casting_depth_(locomotion_max_casting_depth),
   drift_compensation_enabled_(drift_compensation_enabled),
   expected_initial_height_(expected_initial_height),
+  drift_filter_window_(drift_filter_window),
   locomotion_x_steps_(static_cast<int>(locomotion_range_x / locomotion_resolution) + 1),
   locomotion_y_steps_(static_cast<int>(locomotion_range_y / locomotion_resolution) + 1)
 {

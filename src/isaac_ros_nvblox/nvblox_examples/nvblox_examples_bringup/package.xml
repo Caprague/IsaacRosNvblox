@@ -44,6 +44,9 @@
   <!-- Nvblox -->
   <exec_depend>nvblox_ros</exec_depend>
 
+  <!-- Height Scan Bridge -->
+  <exec_depend>height_scan_bridge</exec_depend>
+
   <!-- Visual SLAM -->
   <exec_depend>isaac_ros_visual_slam</exec_depend>
 

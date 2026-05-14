@@ -46,6 +46,11 @@ def load_data(csv_path):
         "mem_used_mb": [],
         "mem_total_mb": [],
         "gpu_load_percent": [],
+        "power_watt": [],
+        "odom_publish_freq_hz": [],
+        "odom_x": [],
+        "odom_y": [],
+        "odom_z": [],
     }
 
     with open(csv_path, "r") as f:
@@ -85,13 +90,38 @@ def moving_average(arr, window=15):
 
 
 def plot(data, save_path=None):
-    fig, axes = plt.subplots(4, 1, figsize=(12, 14), sharex=True)
+    # Determine which data fields are available
+    has_power_data = len(data["power_watt"]) > 0
+    has_odom_data = len(data["odom_x"]) > 0
+    has_odom_freq = len(data["odom_publish_freq_hz"]) > 0
+    has_cpu = len(data["cpu_load_percent"]) > 0 and np.any(data["cpu_load_percent"] >= 0)
+    has_gpu = len(data["gpu_load_percent"]) > 0 and np.any(data["gpu_load_percent"] >= 0)
+    has_mem = len(data["mem_used_mb"]) > 0 and np.any(data["mem_used_mb"] >= 0)
+
+    # Count charts: base 4 (height, freq, cpu/gpu, mem) + optional power + optional odom
+    n_plots = 4
+    if has_power_data:
+        n_plots += 1
+    if has_odom_data:
+        n_plots += 1
+    if has_odom_freq:
+        n_plots += 1
+
+    if not has_power_data:
+        print("[INFO] No 'power_watt' column found in CSV (old log format); skipping power chart.")
+    if not has_odom_data:
+        print("[INFO] No 'odom_x/y/z' columns found in CSV (old log format); skipping odom chart.")
+    if not has_odom_freq:
+        print("[INFO] No 'odom_publish_freq_hz' column found in CSV (old log format); skipping odom freq chart.")
+
+    fig, axes = plt.subplots(n_plots, 1, figsize=(12, 14), sharex=True)
     fig.suptitle("Nvblox LocomotionHeightScan Statistics", fontsize=14)
 
     t = data["timestamp_sec"]
+    ax_idx = 0
 
     # 1. 高程均值与最大偏差
-    ax = axes[0]
+    ax = axes[ax_idx]; ax_idx += 1
     ax.plot(t, data["mean_height"], label="mean_height", color="C0")
     ax.fill_between(
         t,
@@ -107,7 +137,7 @@ def plot(data, save_path=None):
     ax.set_title("Mean Height & Max Deviation")
 
     # 2. 发布频率
-    ax = axes[1]
+    ax = axes[ax_idx]; ax_idx += 1
     freq_raw = data["publish_freq_hz"]
     freq_smooth = moving_average(freq_raw, window=15)
     ax.plot(t, freq_raw, color="C1", linewidth=0.8, alpha=0.4, label="raw")
@@ -119,21 +149,23 @@ def plot(data, save_path=None):
     ax.set_title("Publish Frequency")
 
     # 3. CPU / GPU 负载
-    ax = axes[2]
-    valid_cpu = data["cpu_load_percent"] >= 0
-    valid_gpu = data["gpu_load_percent"] >= 0
-    if np.any(valid_cpu):
-        cpu_raw = data["cpu_load_percent"][valid_cpu]
-        t_cpu = t[valid_cpu]
+    ax = axes[ax_idx]; ax_idx += 1
+    if has_cpu:
+        cpu_raw = data["cpu_load_percent"][data["cpu_load_percent"] >= 0]
+        t_cpu = t[data["cpu_load_percent"] >= 0]
         cpu_smooth = moving_average(cpu_raw, window=15)
         ax.plot(t_cpu, cpu_raw, color="C2", linewidth=0.8, alpha=0.4)
         ax.plot(t_cpu, cpu_smooth, color="C2", linewidth=1.8, label="CPU")
-    if np.any(valid_gpu):
-        gpu_raw = data["gpu_load_percent"][valid_gpu]
-        t_gpu = t[valid_gpu]
+    else:
+        print("[INFO] No valid 'cpu_load_percent' data found; skipping CPU plot.")
+    if has_gpu:
+        gpu_raw = data["gpu_load_percent"][data["gpu_load_percent"] >= 0]
+        t_gpu = t[data["gpu_load_percent"] >= 0]
         gpu_smooth = moving_average(gpu_raw, window=15)
         ax.plot(t_gpu, gpu_raw, color="C3", linewidth=0.8, alpha=0.4)
         ax.plot(t_gpu, gpu_smooth, color="C3", linewidth=1.8, label="GPU")
+    else:
+        print("[INFO] No valid 'gpu_load_percent' data found; skipping GPU plot.")
     ax.set_ylabel("Load (%)")
     ax.set_ylim(0, 105)
     ax.legend(loc="upper right")
@@ -141,9 +173,9 @@ def plot(data, save_path=None):
     ax.set_title("CPU & GPU Load")
 
     # 4. 内存使用
-    ax = axes[3]
+    ax = axes[ax_idx]; ax_idx += 1
     valid_mem = data["mem_used_mb"] >= 0
-    if np.any(valid_mem):
+    if has_mem:
         ax.plot(t[valid_mem], data["mem_used_mb"][valid_mem], label="Used", color="C4")
         if len(data["mem_total_mb"]) > 0 and data["mem_total_mb"][0] > 0:
             ax.axhline(
@@ -153,11 +185,62 @@ def plot(data, save_path=None):
                 alpha=0.6,
                 label="Total",
             )
-    ax.set_xlabel("Time (s)")
+    else:
+        print("[INFO] No valid 'mem_used_mb' data found; skipping memory plot.")
     ax.set_ylabel("Memory (MB)")
     ax.legend(loc="upper right")
     ax.grid(True, linestyle="--", alpha=0.5)
     ax.set_title("Memory Usage")
+
+    # 5. 整机功率
+    if has_power_data:
+        ax = axes[ax_idx]; ax_idx += 1
+        valid_power = data["power_watt"] >= 0
+        if np.any(valid_power):
+            p_raw = data["power_watt"][valid_power]
+            t_power = t[valid_power]
+            p_smooth = moving_average(p_raw, window=15)
+            ax.plot(t_power, p_raw, color="C5", linewidth=0.8, alpha=0.4, label="raw")
+            ax.plot(t_power, p_smooth, color="C5", linewidth=1.8, label="filtered")
+        else:
+            print("[INFO] No valid 'power_watt' data found; power sensor may not be available.")
+            ax.text(0.5, 0.5, "No power data available", ha='center', va='center',
+                    transform=ax.transAxes, fontsize=14, alpha=0.5)
+        ax.set_ylabel("Power (W)")
+        ax.legend(loc="upper right")
+        ax.grid(True, linestyle="--", alpha=0.5)
+        ax.set_title("System Power Consumption")
+
+    # 6. 里程计 x/y/z
+    if has_odom_data:
+        ax = axes[ax_idx]; ax_idx += 1
+        if len(data["odom_x"]) > 0:
+            ax.plot(t[:len(data["odom_x"])], data["odom_x"], label="X", color="C6")
+        if len(data["odom_y"]) > 0:
+            ax.plot(t[:len(data["odom_y"])], data["odom_y"], label="Y", color="C7")
+        if len(data["odom_z"]) > 0:
+            ax.plot(t[:len(data["odom_z"])], data["odom_z"], label="Z", color="C8")
+        ax.set_ylabel("Position (m)")
+        ax.legend(loc="upper right")
+        ax.grid(True, linestyle="--", alpha=0.5)
+        ax.set_title("cuVSLAM Odometry X/Y/Z")
+
+    # 7. 里程计发布频率
+    if has_odom_freq:
+        ax = axes[ax_idx]; ax_idx += 1
+        if len(data["odom_publish_freq_hz"]) > 0:
+            odom_freq_raw = data["odom_publish_freq_hz"]
+            odom_freq_smooth = moving_average(odom_freq_raw, window=15)
+            ax.plot(t[:len(odom_freq_raw)], odom_freq_raw, color="C9", linewidth=0.8, alpha=0.4, label="raw")
+            ax.plot(t[:len(odom_freq_smooth)], odom_freq_smooth, color="C9", linewidth=1.8, label="filtered")
+        ax.set_ylabel("Freq (Hz)")
+        ax.set_ylim(0, 100)
+        ax.legend(loc="upper right")
+        ax.grid(True, linestyle="--", alpha=0.5)
+        ax.set_title("cuVSLAM Odometry Publish Frequency")
+
+    # Set xlabel on last axis
+    axes[-1].set_xlabel("Time (s)")
 
     plt.tight_layout(rect=[0, 0, 1, 0.96])
 

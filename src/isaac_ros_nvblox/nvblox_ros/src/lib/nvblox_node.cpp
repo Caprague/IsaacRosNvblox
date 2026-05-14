@@ -100,6 +100,7 @@ NvbloxNode::NvbloxNode(
     params_.locomotion_height_scan_max_casting_depth.get(),
     params_.locomotion_height_scan_drift_compensation_enabled.get(),
     params_.locomotion_height_scan_expected_initial_height.get(),
+    params_.locomotion_height_scan_drift_filter_window.get(),
     params_.ground_plane_init_delay.get(),
     params_.ground_plane_height_offset.get(),
     this);
@@ -140,9 +141,18 @@ NvbloxNode::NvbloxNode(
   output_running_ = true;
   output_thread_ = std::thread(&NvbloxNode::outputThreadFunc, this);
 
-  // Initialize height scan stats logger
+  // Initialize height scan stats logger and start dedicated stats thread
   if (params_.enable_heightscan_stats_logging.get()) {
     initializeHeightScanLogger();
+    heightscan_stats_running_ = true;
+    heightscan_stats_thread_ = std::thread(&NvbloxNode::heightScanStatsThreadFunc, this);
+
+    // Subscribe to cuVSLAM odometry
+    cuvslam_odom_sub_ = create_subscription<nav_msgs::msg::Odometry>(
+      params_.cuvslam_odom_topic.get(), rclcpp::SensorDataQoS(),
+      std::bind(&NvbloxNode::cuvslamOdomCallback, this, std::placeholders::_1));
+    RCLCPP_INFO(get_logger(), "Subscribed to cuVSLAM odometry topic: %s",
+                params_.cuvslam_odom_topic.get().c_str());
   }
 
   // Setup interactions with ROS
@@ -195,6 +205,11 @@ NvbloxNode::~NvbloxNode()
   terrain_cache_running_ = false;
   if (terrain_cache_thread_.joinable()) {
     terrain_cache_thread_.join();
+  }
+
+  heightscan_stats_running_ = false;
+  if (heightscan_stats_thread_.joinable()) {
+    heightscan_stats_thread_.join();
   }
 
   if (params_.after_shutdown_map_save_path.get().size() > 0) {
@@ -750,7 +765,7 @@ void NvbloxNode::terrainCacheThreadFunc()
 
     if (!cache_updated) {
       RCLCPP_WARN_THROTTLE(get_logger(), *get_clock(), 1000,
-                           "Terrain cache update failed after %d retries; skipping this cycle.",
+                           "Terrain cache update failed after %d retries; using last valid cache.",
                            kMaxRetries);
     }
 
@@ -910,20 +925,13 @@ void NvbloxNode::heightScanQueryThreadFunc()
     layer_publisher_->publishLocomotionHeightScanData(query_heights, frame_id, timestamp);
     layer_publisher_->publishLocomotionHeightScanPointCloud(query_points, frame_id, timestamp);
 
-    // Stats
-    float publish_freq_hz = 0.0f;
-    if (!heightscan_first_publish_) {
-      const double dt = (timestamp - heightscan_last_publish_time_).seconds();
-      if (dt > 1e-6) {
-        publish_freq_hz = static_cast<float>(1.0 / dt);
+    // Cache data for the dedicated stats thread
+    {
+      std::lock_guard<std::mutex> lock(heightscan_data_mutex_);
+      heightscan_latest_heights_ = query_heights;
+      if (heightscan_latest_freq_ == 0.0f) {
+        heightscan_latest_freq_ = params_.publish_locomotion_height_scan_rate_hz.get();
       }
-    } else {
-      heightscan_first_publish_ = false;
-    }
-    heightscan_last_publish_time_ = timestamp;
-
-    if (heightscan_log_file_.is_open()) {
-      logHeightScanStats(timestamp, query_heights, publish_freq_hz);
     }
 
     std::this_thread::sleep_until(next_wake_time);
@@ -2288,6 +2296,74 @@ void NvbloxNode::getEsdfAndGradientService(
 
 // ---- HeightScan 统计与系统资源日志实现 ----
 
+void NvbloxNode::cuvslamOdomCallback(const nav_msgs::msg::Odometry::SharedPtr msg)
+{
+  const rclcpp::Time now = msg->header.stamp;
+  float freq = 0.0f;
+  if (odom_last_time_.seconds() != 0.0) {
+    const double dt = (now - odom_last_time_).seconds();
+    if (dt > 1e-6) {
+      freq = static_cast<float>(1.0 / dt);
+    }
+  }
+
+  const auto& pos = msg->pose.pose.position;
+  {
+    std::lock_guard<std::mutex> lock(odom_data_mutex_);
+    odom_last_time_ = now;
+    odom_publish_freq_ = freq;
+    odom_x_ = pos.x;
+    odom_y_ = pos.y;
+    odom_z_ = pos.z;
+  }
+}
+
+void NvbloxNode::heightScanStatsThreadFunc()
+{
+  const double stats_period_sec = 1.0 / params_.heightscan_stats_rate_hz.get();
+  const auto period = std::chrono::duration<double>(stats_period_sec);
+  auto next_wake_time = std::chrono::steady_clock::now() + period;
+
+  RCLCPP_INFO(get_logger(),
+              "Height scan stats thread started at %.1f Hz",
+              params_.heightscan_stats_rate_hz.get());
+
+  while (heightscan_stats_running_) {
+    // Read cached height scan data
+    std::vector<float> heights;
+    float hs_freq = 0.0f;
+    {
+      std::lock_guard<std::mutex> lock(heightscan_data_mutex_);
+      heights = heightscan_latest_heights_;
+      hs_freq = heightscan_latest_freq_;
+    }
+
+    // Read cached odometry data
+    rclcpp::Time odom_time;
+    float odom_freq = 0.0f;
+    double odom_x = 0.0, odom_y = 0.0, odom_z = 0.0;
+    {
+      std::lock_guard<std::mutex> lock(odom_data_mutex_);
+      odom_time = odom_last_time_;
+      odom_freq = odom_publish_freq_;
+      odom_x = odom_x_;
+      odom_y = odom_y_;
+      odom_z = odom_z_;
+    }
+
+    if (heightscan_log_file_.is_open() && !heights.empty()) {
+      logHeightScanStats(
+        get_clock()->now(), heights, hs_freq,
+        odom_freq, odom_x, odom_y, odom_z);
+    }
+
+    std::this_thread::sleep_until(next_wake_time);
+    next_wake_time += period;
+  }
+
+  RCLCPP_INFO(get_logger(), "Height scan stats thread stopped");
+}
+
 void NvbloxNode::initializeHeightScanLogger()
 {
   // 生成带日期时间的日志文件名
@@ -2315,7 +2391,8 @@ void NvbloxNode::initializeHeightScanLogger()
     if (heightscan_log_file_.tellp() == 0) {
       heightscan_log_file_
         << "timestamp_sec,mean_height,max_deviation,publish_freq_hz,"
-        << "cpu_load_percent,mem_used_mb,mem_total_mb,gpu_load_percent\n";
+        << "cpu_load_percent,mem_used_mb,mem_total_mb,gpu_load_percent,power_watt,"
+        << "odom_publish_freq_hz,odom_x,odom_y,odom_z\n";
       heightscan_log_file_.flush();
     }
     RCLCPP_INFO(get_logger(), "HeightScan stats logging to: %s", log_path.c_str());
@@ -2327,7 +2404,11 @@ void NvbloxNode::initializeHeightScanLogger()
 void NvbloxNode::logHeightScanStats(
   const rclcpp::Time& timestamp,
   const std::vector<float>& heights,
-  float publish_freq_hz)
+  float publish_freq_hz,
+  float odom_publish_freq_hz,
+  double odom_x,
+  double odom_y,
+  double odom_z)
 {
   if (heights.empty()) {
     return;
@@ -2349,6 +2430,7 @@ void NvbloxNode::logHeightScanStats(
   const float cpu_load = getCpuLoadPercent();
   const auto [mem_used_mb, mem_total_mb] = getMemUsageMB();
   const float gpu_load = getGpuLoadPercent();
+  const float power_watt = getPowerWatt();
 
   const double ts_sec = timestamp.seconds();
 
@@ -2360,7 +2442,12 @@ void NvbloxNode::logHeightScanStats(
     << std::setprecision(1) << cpu_load << ","
     << std::setprecision(1) << mem_used_mb << ","
     << std::setprecision(1) << mem_total_mb << ","
-    << std::setprecision(1) << gpu_load << "\n";
+    << std::setprecision(1) << gpu_load << ","
+    << std::setprecision(2) << power_watt << ","
+    << std::setprecision(2) << odom_publish_freq_hz << ","
+    << std::setprecision(6) << odom_x << ","
+    << std::setprecision(6) << odom_y << ","
+    << std::setprecision(6) << odom_z << "\n";
   heightscan_log_file_.flush();
 }
 
@@ -2448,6 +2535,48 @@ float NvbloxNode::getGpuLoadPercent()
   gpu_load_file.close();
 
   return static_cast<float>(load_raw) / 10.0f;
+}
+
+float NvbloxNode::getPowerWatt()
+{
+  // Jetson Xavier/Orin: power rail readings via INA3221 hwmon
+  // Try common hwmon paths for SOC power rail
+  const std::vector<std::string> power_paths = {
+    "/sys/devices/virtual/hwmon/hwmon4/in0_input",       // Xavier NX: VDD_IN
+    "/sys/devices/virtual/hwmon/hwmon5/in0_input",       // Orin: VDD_IN
+    "/sys/power/power_supply/battery/voltage_now",        // fallback
+  };
+
+  for (const auto& path : power_paths) {
+    std::ifstream f(path);
+    if (f.is_open()) {
+      double raw = 0.0;
+      f >> raw;
+      f.close();
+      // in0_input is in millivolts; on Jetson INA3221 channels,
+      // power in Watts = voltage(V) * current(A), but this node only gives voltage.
+      // Use /sys/devices/virtual/hwmon/hwmon*/power*_input if available (direct mW).
+      if (raw > 0) {
+        return static_cast<float>(raw / 1000.0);  // mV -> V (best-effort estimate)
+      }
+    }
+  }
+
+  // Try direct power readings (mW) from powerN_input files
+  for (int hw = 0; hw <= 10; ++hw) {
+    std::string pwr_path = "/sys/devices/virtual/hwmon/hwmon" + std::to_string(hw) + "/power1_input";
+    std::ifstream f(pwr_path);
+    if (f.is_open()) {
+      double raw_mw = 0.0;
+      f >> raw_mw;
+      f.close();
+      if (raw_mw > 0) {
+        return static_cast<float>(raw_mw / 1000.0);  // mW -> W
+      }
+    }
+  }
+
+  return -1.0f;
 }
 
 }  // namespace nvblox

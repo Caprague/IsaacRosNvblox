@@ -269,6 +269,14 @@ constexpr Param<bool>::Description kEnableHeightScanStatsLoggingParamDesc{
   "enable_heightscan_stats_logging", false,
   "Whether to enable height scan stats logging (CSV with frequency, CPU/GPU load, memory)."};
 
+constexpr Param<float>::Description kHeightScanStatsRateHzParamDesc{
+  "heightscan_stats_rate_hz", 1.0f,
+  "Rate of the dedicated height scan stats logging thread (Hz)."};
+
+constexpr StringParam::Description kCuvslamOdomTopicParamDesc{
+  "cuvslam_odom_topic", "/visual_slam/tracked_odometry",
+  "ROS topic name for cuVSLAM odometry messages (nav_msgs/Odometry)."};
+
 // ======= TERRAIN CACHE PARAMS =======
 constexpr Param<float>::Description kTerrainCacheRangeXParamDesc{
   "terrain_cache_range_x", 4.0f,
@@ -340,6 +348,11 @@ constexpr Param<float>::Description kLocomotionHeightScanExpectedInitialHeightPa
   "locomotion_height_scan_expected_initial_height", 0.28f,
   "Expected distance from robot base to ground at the center of the height scan grid (meters). "
   "Used for online drift compensation: drift = expected - measured_center_mean."};
+
+constexpr Param<int>::Description kLocomotionHeightScanDriftFilterWindowParamDesc{
+  "locomotion_height_scan_drift_filter_window", 5,
+  "Sliding window size for filtering the online drift compensation value. "
+  "A moving average of the last N drift samples is applied. Set to 1 to disable filtering."};
 
 // ======= OUTPUT PARAMS =======
 constexpr Param<float>::Description kEsdfAndGradientsUnobservedValueParamDesc{
@@ -460,6 +473,8 @@ public:
   Param<float> publish_locomotion_height_scan_rate_hz{kPublishLocomotionHeightScanRateHzParamDesc};
   Param<float> publish_navigation_height_scan_rate_hz{kPublishNavigationHeightScanRateHzParamDesc};
   Param<bool> enable_heightscan_stats_logging{kEnableHeightScanStatsLoggingParamDesc};
+  Param<float> heightscan_stats_rate_hz{kHeightScanStatsRateHzParamDesc};
+  StringParam cuvslam_odom_topic{kCuvslamOdomTopicParamDesc};
   Param<float> distance_map_local_maintenance{kDistanceMapLocalMaintenance};
 
   // ======= TERRAIN CACHE PARAMS (low-freq large-area sampling) =======
@@ -484,6 +499,7 @@ public:
   Param<float> locomotion_height_scan_max_casting_depth{kLocomotionHeightScanMaxCastingDepthParamDesc};
   Param<bool> locomotion_height_scan_drift_compensation_enabled{kLocomotionHeightScanDriftCompensationEnabledParamDesc};
   Param<float> locomotion_height_scan_expected_initial_height{kLocomotionHeightScanExpectedInitialHeightParamDesc};
+  Param<int> locomotion_height_scan_drift_filter_window{kLocomotionHeightScanDriftFilterWindowParamDesc};
 };
 
 /// Container for all node params of the fuser node.

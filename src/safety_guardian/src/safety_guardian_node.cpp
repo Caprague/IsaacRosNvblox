@@ -53,6 +53,9 @@ SafetyGuardianNode::SafetyGuardianNode()
   this->declare_parameter<std::string>("global_frame", "odom");
   this->declare_parameter<std::string>("base_frame", "base_link");
 
+  // 启动静默期参数
+  this->declare_parameter<double>("startup_silence_duration", 3.0);
+
   // ========== 获取参数 ==========
 
   this->vslam_timeout_threshold_ = this->get_parameter("vslam_timeout_threshold").as_double();
@@ -71,6 +74,8 @@ SafetyGuardianNode::SafetyGuardianNode()
   this->global_frame_ = this->get_parameter("global_frame").as_string();
   this->base_frame_ = this->get_parameter("base_frame").as_string();
 
+  this->startup_silence_duration_ = this->get_parameter("startup_silence_duration").as_double();
+
   RCLCPP_INFO(this->get_logger(), "Parameters loaded:");
   RCLCPP_INFO(this->get_logger(), "  VSLAM timeout threshold: %.2f s", this->vslam_timeout_threshold_);
   RCLCPP_INFO(this->get_logger(), "  VSLAM position threshold: %.2f m", this->vslam_position_threshold_);
@@ -79,6 +84,7 @@ SafetyGuardianNode::SafetyGuardianNode()
   RCLCPP_INFO(this->get_logger(), "  Status publish rate: %.2f Hz", this->status_publish_rate_);
   RCLCPP_INFO(this->get_logger(), "  Global frame: %s", this->global_frame_.c_str());
   RCLCPP_INFO(this->get_logger(), "  Base frame: %s", this->base_frame_.c_str());
+  RCLCPP_INFO(this->get_logger(), "  Startup silence duration: %.1f s", this->startup_silence_duration_);
 
   // ========== 初始化安全状态 ==========
 
@@ -217,6 +223,15 @@ void SafetyGuardianNode::summaryTimerCallback()
   std::cout << CYAN << BOLD << "Safety Guardian - Status Summary" << RESET << std::endl;
   std::cout << CYAN << BOLD << "========================================" << RESET << std::endl;
   std::cout << "Uptime: " << std::fixed << std::setprecision(1) << uptime << " s" << std::endl;
+
+  // 静默期状态提示
+  if (uptime < this->startup_silence_duration_) {
+    double remaining = this->startup_silence_duration_ - uptime;
+    std::cout << YELLOW << BOLD << "*** STARTUP SILENCE PERIOD ***" << RESET
+              << " (" << std::fixed << std::setprecision(1) << remaining
+              << " s remaining, safety checks suppressed)" << std::endl;
+  }
+
   std::cout << BLUE << "----------------------------------------" << RESET << std::endl;
 
   // --- 安全状态（仅 VSLAM 驱动） ---
@@ -682,6 +697,16 @@ bool SafetyGuardianNode::getCurrentPositionFromTF(geometry_msgs::msg::Point & po
 
 void SafetyGuardianNode::monitorVSLAMStatus()
 {
+  // 启动静默期：在节点上线后的前 N 秒内不进行安全状态判断
+  // 避免话题发送者与接收者建立稳定连接时导致的状态误判
+  rclcpp::Time now = this->get_clock()->now();
+  double elapsed_since_start = (now - this->node_start_time_).seconds();
+  if (elapsed_since_start < this->startup_silence_duration_) {
+    std::lock_guard<std::mutex> lock(this->vslam_mutex_);
+    this->vslam_safe_ = true;  // 静默期内始终视为安全
+    return;
+  }
+
   std::lock_guard<std::mutex> lock(this->vslam_mutex_);
 
   if (!this->vslam_use_tf_) {

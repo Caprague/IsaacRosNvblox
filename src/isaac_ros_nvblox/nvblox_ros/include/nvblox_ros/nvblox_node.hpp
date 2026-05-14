@@ -24,6 +24,7 @@
 #include <message_filters/subscriber.h>
 #include <message_filters/sync_policies/approximate_time.h>
 #include <message_filters/sync_policies/exact_time.h>
+#include <nav_msgs/msg/odometry.hpp>
 
 #include <chrono>
 #include <list>
@@ -506,19 +507,41 @@ protected:
 
   // ---- HeightScan 统计与系统资源日志 ----
   std::ofstream heightscan_log_file_;
-  rclcpp::Time heightscan_last_publish_time_ = rclcpp::Time(0, 0, RCL_ROS_TIME);
-  bool heightscan_first_publish_ = true;
 
   // CPU 统计缓存
   unsigned long long heightscan_last_cpu_total_ = 0;
   unsigned long long heightscan_last_cpu_idle_ = 0;
   bool heightscan_cpu_stat_initialized_ = false;
 
+  // 独立 stats 线程
+  std::thread heightscan_stats_thread_;
+  std::atomic<bool> heightscan_stats_running_{false};
+
+  // 最新高程采样数据缓存（供 stats 线程读取）
+  std::mutex heightscan_data_mutex_;
+  std::vector<float> heightscan_latest_heights_;
+  float heightscan_latest_freq_ = 0.0f;
+
+  // 里程计数据缓存（供 stats 线程读取）
+  std::mutex odom_data_mutex_;
+  rclcpp::Time odom_last_time_;
+  float odom_publish_freq_ = 0.0f;
+  double odom_x_ = 0.0;
+  double odom_y_ = 0.0;
+  double odom_z_ = 0.0;
+  rclcpp::Subscription<nav_msgs::msg::Odometry>::SharedPtr cuvslam_odom_sub_;
+
   /// Low-frequency thread: large-area terrain sampling, GPU smoothing, cache update
   void terrainCacheThreadFunc();
 
   /// High-frequency thread: query local scan from cache via pose transform + bilinear interpolation
   void heightScanQueryThreadFunc();
+
+  /// Dedicated thread for periodic stats logging (CSV with system resources + odometry)
+  void heightScanStatsThreadFunc();
+
+  /// cuVSLAM odometry subscriber callback
+  void cuvslamOdomCallback(const nav_msgs::msg::Odometry::SharedPtr msg);
 
   /// 初始化 CSV 日志文件（写入表头）
   void initializeHeightScanLogger();
@@ -527,7 +550,11 @@ protected:
   void logHeightScanStats(
     const rclcpp::Time& timestamp,
     const std::vector<float>& heights,
-    float publish_freq_hz);
+    float publish_freq_hz,
+    float odom_publish_freq_hz,
+    double odom_x,
+    double odom_y,
+    double odom_z);
 
   /// 读取 CPU 使用率百分比（基于 /proc/stat）
   float getCpuLoadPercent();
@@ -537,6 +564,9 @@ protected:
 
   /// 读取 GPU 负载百分比（Jetson: /sys/devices/platform/gpu.0/load）
   float getGpuLoadPercent();
+
+  /// 读取整机运行功率（Watt），尝试 Jetson hwmon 传感器，返回 -1.0f 表示不可用
+  float getPowerWatt();
 
   /// The time stamp of the last frame contributing to the reconstruction.
   rclcpp::Time newest_integrated_depth_time_ = rclcpp::Time(0, 0, RCL_ROS_TIME);

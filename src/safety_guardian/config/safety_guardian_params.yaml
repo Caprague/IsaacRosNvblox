@@ -71,3 +71,9 @@ safety_guardian_node:
     # 机器人基座坐标系
     # 通常为 "base_link"
     base_frame: "base_link"
+
+    # ========== 启动静默期参数 ==========
+
+    # 启动后静默时长（秒）
+    # 节点上线后在此期间内不进行安全状态判断，避免话题连接建立期间的状态误判
+    startup_silence_duration: 3.0

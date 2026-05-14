@@ -81,6 +81,9 @@ private:
   std::string global_frame_;            // 全局坐标系（通常为 "map" 或 "odom"）
   std::string base_frame_;              // 机器人基座坐标系（通常为 "base_link"）
 
+  // 启动静默期参数
+  double startup_silence_duration_;     // 启动后静默时长（秒），期间不进行安全状态判断
+
   // ========== 订阅器和发布器 ==========
 
   // 安全状态发布器
