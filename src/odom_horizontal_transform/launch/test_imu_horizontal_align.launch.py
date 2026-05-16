@@ -53,6 +53,7 @@ def generate_launch_description():
         parameters=[{
             'start_delay': 2.5,          # 延迟启动水平校正过程
             'base_imu_topic': '',        # 底盘IMU话题，空=禁用双IMU标定
+            'use_static_tf_broadcaster': False,  # False=动态TF(/tf)，True=静态TF(/tf_static)
             'camera_base_x': 0.34,       # 相机在底盘坐标系中的X位置
             'camera_base_y': 0.0,        # 相机在底盘坐标系中的Y位置
             'camera_base_z': 0.09,       # 相机在底盘坐标系中的Z位置

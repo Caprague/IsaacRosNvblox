@@ -2,6 +2,7 @@
 #include <sensor_msgs/msg/imu.hpp>
 #include <geometry_msgs/msg/transform_stamped.hpp>
 #include <tf2_ros/transform_broadcaster.h>
+#include <tf2_ros/static_transform_broadcaster.h>
 #include <Eigen/Dense>
 #include <vector>
 #include <chrono>
@@ -20,17 +21,19 @@ public:
     
     // 声明并获取参数
     this->declare_parameter<double>("start_delay", 0.0);
-    this->declare_parameter<std::string>("imu_topic", "/camera/imu");
+    this->declare_parameter<std::string>("imu_topic", "/camera/imu");   // 相机IMU话题
+    this->declare_parameter<std::string>("base_imu_topic", "");         // 底盘IMU话题，空则禁用双IMU标定
     this->declare_parameter<double>("transform_publish_rate", 100.0);
-    this->declare_parameter<std::string>("base_imu_topic", "");  // 底盘IMU话题，空则禁用双IMU标定
-    this->declare_parameter<double>("camera_base_x", 0.34);      // 相机在底盘坐标系中的平移X
-    this->declare_parameter<double>("camera_base_y", 0.0);       // 相机在底盘坐标系中的平移Y
-    this->declare_parameter<double>("camera_base_z", 0.09);      // 相机在底盘坐标系中的平移Z
+    this->declare_parameter<bool>("use_static_tf_broadcaster", false);  // true=发布/tf_static，false=按频率发布/tf
+    this->declare_parameter<double>("camera_base_x", 0.34);             // 相机在底盘坐标系中的平移X
+    this->declare_parameter<double>("camera_base_y", 0.0);              // 相机在底盘坐标系中的平移Y
+    this->declare_parameter<double>("camera_base_z", 0.09);             // 相机在底盘坐标系中的平移Z
     
     this->start_delay_ = this->get_parameter("start_delay").as_double();
     this->imu_topic_ = this->get_parameter("imu_topic").as_string();
-    this->transform_publish_rate_ = this->get_parameter("transform_publish_rate").as_double();
     this->base_imu_topic_ = this->get_parameter("base_imu_topic").as_string();
+    this->transform_publish_rate_ = this->get_parameter("transform_publish_rate").as_double();
+    this->use_static_tf_broadcaster_ = this->get_parameter("use_static_tf_broadcaster").as_bool();
     this->camera_base_translation_ = Eigen::Vector3d(
       this->get_parameter("camera_base_x").as_double(),
       this->get_parameter("camera_base_y").as_double(),
@@ -40,7 +43,7 @@ public:
     // IMU数据收集参数
     this->collecting_data_ = false;
     this->collection_duration_ = 3.0;  // 收集3秒数据
-    this->min_valid_samples_ = 10;
+    this->min_valid_samples_ = 100;
     
     // 初始化对齐四元数
     this->alignment_quaternion_.setIdentity();
@@ -50,8 +53,14 @@ public:
     this->camera_base_quaternion_.setIdentity();
     this->camera_base_quaternion_set_ = false;
     
-    // 创建动态TF广播器
-    this->tf_broadcaster_ = std::make_unique<tf2_ros::TransformBroadcaster>(*this);
+    // 创建TF广播器
+    if (this->use_static_tf_broadcaster_) {
+      this->static_tf_broadcaster_ = std::make_unique<tf2_ros::StaticTransformBroadcaster>(*this);
+      RCLCPP_INFO(this->get_logger(), "Using static TF broadcaster (/tf_static)");
+    } else {
+      this->tf_broadcaster_ = std::make_unique<tf2_ros::TransformBroadcaster>(*this);
+      RCLCPP_INFO(this->get_logger(), "Using dynamic TF broadcaster (/tf), publish rate: %.2f Hz", this->transform_publish_rate_);
+    }
     
     // 订阅相机IMU数据
     auto qos = rclcpp::QoS(rclcpp::KeepLast(10));
@@ -416,6 +425,12 @@ private:
 
   void create_transform_publish_timer()
   {
+    if (this->use_static_tf_broadcaster_) {
+      RCLCPP_INFO(this->get_logger(), "Publishing static transforms once");
+      this->publish_transform_callback();
+      return;
+    }
+
     RCLCPP_INFO(this->get_logger(), "Creating transform publish timer with rate %.2f Hz", this->transform_publish_rate_);
     double publish_period = 1.0 / this->transform_publish_rate_;
     this->transform_timer_ = this->create_wall_timer(
@@ -434,6 +449,15 @@ private:
     }
   }
   
+  void send_transform(const geometry_msgs::msg::TransformStamped& transform)
+  {
+    if (this->use_static_tf_broadcaster_) {
+      this->static_tf_broadcaster_->sendTransform(transform);
+    } else {
+      this->tf_broadcaster_->sendTransform(transform);
+    }
+  }
+
   void publish_horizontal_transform(const Eigen::Quaterniond& quaternion)
   {
     geometry_msgs::msg::TransformStamped transform;
@@ -453,7 +477,7 @@ private:
     transform.transform.rotation.z = quaternion.z();
     
     // 发布动态变换
-    this->tf_broadcaster_->sendTransform(transform);
+    this->send_transform(transform);
   }
 
   /// 发布 camera_link → base_link 变换
@@ -485,14 +509,28 @@ private:
       }
       else
       {
-          // 回退模式：硬编码值（兼容旧配置）
-          // 原始四元数 (w=1, x=0, y=-0.11, z=0) 近似表示约12.6°俯仰偏移
-          q_cam_base = Eigen::Quaterniond(1.0, 0.0, -0.11, 0.0).normalized();
+          // 回退模式：未启用底盘IMU时，假设base_link与camera_link之间只有安装俯仰角差异。
+          // alignment_quaternion_已经描述了将当前相机姿态校正到水平基准所需的旋转，
+          // 这里仅提取其中的pitch分量，并取反作为camera_link→base_link的俯仰补偿，
+          // 使base_link通过现有TF链传递后也落在odom_horizontal定义的水平基准上。
+          const Eigen::Matrix3d R_horizontal_camera = this->alignment_quaternion_.toRotationMatrix();
+          double camera_pitch_rad = std::asin(
+            std::max(-1.0, std::min(1.0, -R_horizontal_camera(2, 0))));
+
+          q_cam_base = Eigen::Quaterniond(
+            Eigen::AngleAxisd(-camera_pitch_rad, Eigen::Vector3d::UnitY()));
+          q_cam_base.normalize();
           t_cam_base = Eigen::Vector3d(
             -this->camera_base_translation_[0],
             -this->camera_base_translation_[1],
             -this->camera_base_translation_[2]
           );
+
+          RCLCPP_INFO_THROTTLE(
+            this->get_logger(), *this->get_clock(), 5000,
+            "Fallback camera->base pitch compensation: camera_pitch=%.2f deg, q_cam_base=[w=%.4f, x=%.4f, y=%.4f, z=%.4f]",
+            camera_pitch_rad * 180.0 / M_PI,
+            q_cam_base.w(), q_cam_base.x(), q_cam_base.y(), q_cam_base.z());
       }
       
       transform.transform.translation.x = t_cam_base[0];
@@ -504,7 +542,7 @@ private:
       transform.transform.rotation.y = q_cam_base.y();
       transform.transform.rotation.z = q_cam_base.z();
       
-      this->tf_broadcaster_->sendTransform(transform);
+      this->send_transform(transform);
   }
 
   void publish_lidar_transform()
@@ -525,7 +563,7 @@ private:
       transform.transform.rotation.y = 0.99134;
       transform.transform.rotation.z = 0.0;
       
-      this->tf_broadcaster_->sendTransform(transform);
+      this->send_transform(transform);
   }
   
   // 参数
@@ -533,6 +571,7 @@ private:
   std::string imu_topic_;
   std::string base_imu_topic_;
   double transform_publish_rate_;
+  bool use_static_tf_broadcaster_;
   Eigen::Vector3d camera_base_translation_;  // 相机在底盘坐标系中的位置
   
   // IMU数据收集
@@ -560,6 +599,7 @@ private:
   
   // TF广播器
   std::unique_ptr<tf2_ros::TransformBroadcaster> tf_broadcaster_;
+  std::unique_ptr<tf2_ros::StaticTransformBroadcaster> static_tf_broadcaster_;
 };
 
 int main(int argc, char * argv[])
