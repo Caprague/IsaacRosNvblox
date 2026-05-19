@@ -2311,7 +2311,7 @@ void NvbloxNode::cuvslamOdomCallback(const nav_msgs::msg::Odometry::SharedPtr ms
   {
     std::lock_guard<std::mutex> lock(odom_data_mutex_);
     odom_last_time_ = now;
-    odom_publish_freq_ = freq;
+    odom_topic_freq_hz_ = freq;
     odom_x_ = pos.x;
     odom_y_ = pos.y;
     odom_z_ = pos.z;
@@ -2339,22 +2339,24 @@ void NvbloxNode::heightScanStatsThreadFunc()
     }
 
     // Read cached odometry data
-    rclcpp::Time odom_time;
-    float odom_freq = 0.0f;
+    float odom_topic_freq = 0.0f;
     double odom_x = 0.0, odom_y = 0.0, odom_z = 0.0;
     {
       std::lock_guard<std::mutex> lock(odom_data_mutex_);
-      odom_time = odom_last_time_;
-      odom_freq = odom_publish_freq_;
+      odom_topic_freq = odom_topic_freq_hz_;
       odom_x = odom_x_;
       odom_y = odom_y_;
       odom_z = odom_z_;
     }
 
+    float odom_tf_transform_freq = 0.0f;
+    float odom_topic_transform_freq = 0.0f;
+    transformer_.getPoseSourceFrequencies(&odom_tf_transform_freq, &odom_topic_transform_freq);
+
     if (heightscan_log_file_.is_open() && !heights.empty()) {
       logHeightScanStats(
         get_clock()->now(), heights, hs_freq,
-        odom_freq, odom_x, odom_y, odom_z);
+        odom_tf_transform_freq, odom_topic_freq, odom_topic_transform_freq, odom_x, odom_y, odom_z);
     }
 
     std::this_thread::sleep_until(next_wake_time);
@@ -2392,7 +2394,7 @@ void NvbloxNode::initializeHeightScanLogger()
       heightscan_log_file_
         << "timestamp_sec,mean_height,max_deviation,publish_freq_hz,"
         << "cpu_load_percent,mem_used_mb,mem_total_mb,gpu_load_percent,power_watt,"
-        << "odom_publish_freq_hz,odom_x,odom_y,odom_z\n";
+        << "odom_tf_transform_freq_hz,odom_topic_freq_hz,odom_topic_transform_freq_hz,odom_x,odom_y,odom_z\n";
       heightscan_log_file_.flush();
     }
     RCLCPP_INFO(get_logger(), "HeightScan stats logging to: %s", log_path.c_str());
@@ -2405,7 +2407,9 @@ void NvbloxNode::logHeightScanStats(
   const rclcpp::Time& timestamp,
   const std::vector<float>& heights,
   float publish_freq_hz,
-  float odom_publish_freq_hz,
+  float odom_tf_transform_freq_hz,
+  float odom_topic_freq_hz,
+  float odom_topic_transform_freq_hz,
   double odom_x,
   double odom_y,
   double odom_z)
@@ -2444,7 +2448,9 @@ void NvbloxNode::logHeightScanStats(
     << std::setprecision(1) << mem_total_mb << ","
     << std::setprecision(1) << gpu_load << ","
     << std::setprecision(2) << power_watt << ","
-    << std::setprecision(2) << odom_publish_freq_hz << ","
+    << std::setprecision(2) << odom_tf_transform_freq_hz << ","
+    << std::setprecision(2) << odom_topic_freq_hz << ","
+    << std::setprecision(2) << odom_topic_transform_freq_hz << ","
     << std::setprecision(6) << odom_x << ","
     << std::setprecision(6) << odom_y << ","
     << std::setprecision(6) << odom_z << "\n";

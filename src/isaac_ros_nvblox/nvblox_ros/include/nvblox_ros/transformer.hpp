@@ -24,6 +24,7 @@
 
 #include <map>
 #include <memory>
+#include <mutex>
 #include <string>
 #include <unordered_map>
 
@@ -59,6 +60,9 @@ public:
     const geometry_msgs::msg::TransformStamped::ConstSharedPtr transform_msg);
   void poseCallback(
     const geometry_msgs::msg::PoseStamped::ConstSharedPtr transform_msg);
+
+  /// Returns latest pose-source frequency estimates in Hz.
+  void getPoseSourceFrequencies(float * tf_freq_hz, float * topic_freq_hz);
 
   /// Set the names of the frames.
   void set_global_frame(const std::string & global_frame)
@@ -116,6 +120,13 @@ private:
   std::map<uint64_t, Transform> transform_queue_;
   /// Maps sensor frame to transform pose frame -> sensor frame.
   std::unordered_map<std::string, Transform> sensor_transforms_;
+
+  // Pose source frequency tracking
+  mutable std::mutex pose_frequency_mutex_;
+  rclcpp::Time last_tf_lookup_time_;
+  rclcpp::Time last_topic_msg_time_;
+  float tf_lookup_freq_hz_ = 0.0f;
+  float topic_transform_freq_hz_ = 0.0f;
 };
 
 }  // namespace nvblox

@@ -47,7 +47,9 @@ def load_data(csv_path):
         "mem_total_mb": [],
         "gpu_load_percent": [],
         "power_watt": [],
-        "odom_publish_freq_hz": [],
+        "odom_tf_transform_freq_hz": [],
+        "odom_topic_freq_hz": [],
+        "odom_topic_transform_freq_hz": [],
         "odom_x": [],
         "odom_y": [],
         "odom_z": [],
@@ -93,7 +95,10 @@ def plot(data, save_path=None):
     # Determine which data fields are available
     has_power_data = len(data["power_watt"]) > 0
     has_odom_data = len(data["odom_x"]) > 0
-    has_odom_freq = len(data["odom_publish_freq_hz"]) > 0
+    has_odom_tf_transform_freq = len(data["odom_tf_transform_freq_hz"]) > 0
+    has_odom_topic_freq = len(data["odom_topic_freq_hz"]) > 0
+    has_odom_topic_transform_freq = len(data["odom_topic_transform_freq_hz"]) > 0
+    has_odom_any_freq = has_odom_tf_transform_freq or has_odom_topic_freq or has_odom_topic_transform_freq
     has_cpu = len(data["cpu_load_percent"]) > 0 and np.any(data["cpu_load_percent"] >= 0)
     has_gpu = len(data["gpu_load_percent"]) > 0 and np.any(data["gpu_load_percent"] >= 0)
     has_mem = len(data["mem_used_mb"]) > 0 and np.any(data["mem_used_mb"] >= 0)
@@ -104,15 +109,15 @@ def plot(data, save_path=None):
         n_plots += 1
     if has_odom_data:
         n_plots += 1
-    if has_odom_freq:
+    if has_odom_any_freq:
         n_plots += 1
 
     if not has_power_data:
         print("[INFO] No 'power_watt' column found in CSV (old log format); skipping power chart.")
     if not has_odom_data:
         print("[INFO] No 'odom_x/y/z' columns found in CSV (old log format); skipping odom chart.")
-    if not has_odom_freq:
-        print("[INFO] No 'odom_publish_freq_hz' column found in CSV (old log format); skipping odom freq chart.")
+    if not has_odom_any_freq:
+        print("[INFO] No 'odom_tf_transform_freq_hz/odom_topic_freq_hz/odom_topic_transform_freq_hz' columns found in CSV (old log format); skipping odom freq chart.")
 
     fig, axes = plt.subplots(n_plots, 1, figsize=(12, 14), sharex=True)
     fig.suptitle("Nvblox LocomotionHeightScan Statistics", fontsize=14)
@@ -225,19 +230,29 @@ def plot(data, save_path=None):
         ax.grid(True, linestyle="--", alpha=0.5)
         ax.set_title("cuVSLAM Odometry X/Y/Z")
 
-    # 7. 里程计发布频率
-    if has_odom_freq:
+    # 7. 里程计频率（TF / 里程计话题 / pose-transform 话题同图）
+    if has_odom_any_freq:
         ax = axes[ax_idx]; ax_idx += 1
-        if len(data["odom_publish_freq_hz"]) > 0:
-            odom_freq_raw = data["odom_publish_freq_hz"]
-            odom_freq_smooth = moving_average(odom_freq_raw, window=15)
-            ax.plot(t[:len(odom_freq_raw)], odom_freq_raw, color="C9", linewidth=0.8, alpha=0.4, label="raw")
-            ax.plot(t[:len(odom_freq_smooth)], odom_freq_smooth, color="C9", linewidth=1.8, label="filtered")
+        if has_odom_tf_transform_freq and len(data["odom_tf_transform_freq_hz"]) > 0:
+            odom_tf_raw = data["odom_tf_transform_freq_hz"]
+            odom_tf_smooth = moving_average(odom_tf_raw, window=15)
+            ax.plot(t[:len(odom_tf_raw)], odom_tf_raw, color="C9", linewidth=0.8, alpha=0.35, label="TF raw")
+            ax.plot(t[:len(odom_tf_smooth)], odom_tf_smooth, color="C9", linewidth=1.8, label="TF filtered")
+        if has_odom_topic_freq and len(data["odom_topic_freq_hz"]) > 0:
+            odom_topic_raw = data["odom_topic_freq_hz"]
+            odom_topic_smooth = moving_average(odom_topic_raw, window=15)
+            ax.plot(t[:len(odom_topic_raw)], odom_topic_raw, color="C10", linewidth=0.8, alpha=0.35, label="Odom topic raw")
+            ax.plot(t[:len(odom_topic_smooth)], odom_topic_smooth, color="C10", linewidth=1.8, label="Odom topic filtered")
+        if has_odom_topic_transform_freq and len(data["odom_topic_transform_freq_hz"]) > 0:
+            odom_transform_raw = data["odom_topic_transform_freq_hz"]
+            odom_transform_smooth = moving_average(odom_transform_raw, window=15)
+            ax.plot(t[:len(odom_transform_raw)], odom_transform_raw, color="C11", linewidth=0.8, alpha=0.35, label="Pose/transform topic raw")
+            ax.plot(t[:len(odom_transform_smooth)], odom_transform_smooth, color="C11", linewidth=1.8, label="Pose/transform topic filtered")
         ax.set_ylabel("Freq (Hz)")
         ax.set_ylim(0, 100)
         ax.legend(loc="upper right")
         ax.grid(True, linestyle="--", alpha=0.5)
-        ax.set_title("cuVSLAM Odometry Publish Frequency")
+        ax.set_title("Odometry Frequency (TF vs Topics)")
 
     # Set xlabel on last axis
     axes[-1].set_xlabel("Time (s)")

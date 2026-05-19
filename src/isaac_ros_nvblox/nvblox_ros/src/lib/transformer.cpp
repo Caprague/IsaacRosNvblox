@@ -19,6 +19,7 @@
 
 #include <algorithm>
 #include <memory>
+#include <mutex>
 #include <string>
 
 namespace nvblox
@@ -56,7 +57,20 @@ bool Transformer::lookupTransformToGlobalFrame(
   if (!use_topic_transforms_) {
     // Then I guess we're using TF.
     // Try to look up the pose in TF.
-    return lookupTransformTf(global_frame_, sensor_frame, timestamp, transform);
+    const bool success = lookupTransformTf(global_frame_, sensor_frame, timestamp, transform);
+    if (success) {
+      std::lock_guard<std::mutex> lock(pose_frequency_mutex_);
+      const rclcpp::Time sample_time =
+        (timestamp == rclcpp::Time(0)) ? node_->get_clock()->now() : timestamp;
+      if (last_tf_lookup_time_.nanoseconds() != 0) {
+        const double dt = (sample_time - last_tf_lookup_time_).seconds();
+        if (dt > 1e-6) {
+          tf_lookup_freq_hz_ = static_cast<float>(1.0 / dt);
+        }
+      }
+      last_tf_lookup_time_ = sample_time;
+    }
+    return success;
   } else {
     // We're using topic transforms.
     if (sensor_frame != pose_frame_) {
@@ -87,6 +101,15 @@ void Transformer::transformCallback(
 {
   rclcpp::Time timestamp = transform_msg->header.stamp;
   transform_queue_[timestamp.nanoseconds()] = transformToEigen(transform_msg->transform);
+
+  std::lock_guard<std::mutex> lock(pose_frequency_mutex_);
+  if (last_topic_msg_time_.nanoseconds() != 0) {
+    const double dt = (timestamp - last_topic_msg_time_).seconds();
+    if (dt > 1e-6) {
+      topic_transform_freq_hz_ = static_cast<float>(1.0 / dt);
+    }
+  }
+  last_topic_msg_time_ = timestamp;
 }
 
 void Transformer::poseCallback(
@@ -94,6 +117,15 @@ void Transformer::poseCallback(
 {
   rclcpp::Time timestamp = transform_msg->header.stamp;
   transform_queue_[timestamp.nanoseconds()] = poseToEigen(transform_msg->pose);
+
+  std::lock_guard<std::mutex> lock(pose_frequency_mutex_);
+  if (last_topic_msg_time_.nanoseconds() != 0) {
+    const double dt = (timestamp - last_topic_msg_time_).seconds();
+    if (dt > 1e-6) {
+      topic_transform_freq_hz_ = static_cast<float>(1.0 / dt);
+    }
+  }
+  last_topic_msg_time_ = timestamp;
 }
 
 bool Transformer::lookupTransformTf(
@@ -197,6 +229,17 @@ Transform Transformer::poseToEigen(const geometry_msgs::msg::Pose & msg) const
     Eigen::Quaterniond(
       msg.orientation.w, msg.orientation.x, msg.orientation.y,
       msg.orientation.z));
+}
+
+void Transformer::getPoseSourceFrequencies(float * tf_freq_hz, float * topic_freq_hz)
+{
+  std::lock_guard<std::mutex> lock(pose_frequency_mutex_);
+  if (tf_freq_hz != nullptr) {
+    *tf_freq_hz = tf_lookup_freq_hz_;
+  }
+  if (topic_freq_hz != nullptr) {
+    *topic_freq_hz = topic_transform_freq_hz_;
+  }
 }
 
 }  // namespace nvblox

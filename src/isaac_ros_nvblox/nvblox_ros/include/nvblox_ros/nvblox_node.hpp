@@ -525,7 +525,7 @@ protected:
   // 里程计数据缓存（供 stats 线程读取）
   std::mutex odom_data_mutex_;
   rclcpp::Time odom_last_time_;
-  float odom_publish_freq_ = 0.0f;
+  float odom_topic_freq_hz_ = 0.0f;
   double odom_x_ = 0.0;
   double odom_y_ = 0.0;
   double odom_z_ = 0.0;
@@ -551,7 +551,9 @@ protected:
     const rclcpp::Time& timestamp,
     const std::vector<float>& heights,
     float publish_freq_hz,
-    float odom_publish_freq_hz,
+    float odom_tf_transform_freq_hz,
+    float odom_topic_freq_hz,
+    float odom_topic_transform_freq_hz,
     double odom_x,
     double odom_y,
     double odom_z);
