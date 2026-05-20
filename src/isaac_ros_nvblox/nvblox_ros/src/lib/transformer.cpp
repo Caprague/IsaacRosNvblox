@@ -60,15 +60,15 @@ bool Transformer::lookupTransformToGlobalFrame(
     const bool success = lookupTransformTf(global_frame_, sensor_frame, timestamp, transform);
     if (success) {
       std::lock_guard<std::mutex> lock(pose_frequency_mutex_);
-      const rclcpp::Time sample_time =
-        (timestamp == rclcpp::Time(0)) ? node_->get_clock()->now() : timestamp;
-      if (last_tf_lookup_time_.nanoseconds() != 0) {
-        const double dt = (sample_time - last_tf_lookup_time_).seconds();
-        if (dt > 1e-6) {
-          tf_lookup_freq_hz_ = static_cast<float>(1.0 / dt);
+      const int64_t sample_time_ns =
+        (timestamp == rclcpp::Time(0)) ? node_->get_clock()->now().nanoseconds() : timestamp.nanoseconds();
+      if (last_tf_lookup_time_ns_ != 0) {
+        const int64_t dt_ns = sample_time_ns - last_tf_lookup_time_ns_;
+        if (dt_ns > 1000) {
+          tf_lookup_freq_hz_ = static_cast<float>(1e9 / static_cast<double>(dt_ns));
         }
       }
-      last_tf_lookup_time_ = sample_time;
+      last_tf_lookup_time_ns_ = sample_time_ns;
     }
     return success;
   } else {
@@ -103,13 +103,14 @@ void Transformer::transformCallback(
   transform_queue_[timestamp.nanoseconds()] = transformToEigen(transform_msg->transform);
 
   std::lock_guard<std::mutex> lock(pose_frequency_mutex_);
-  if (last_topic_msg_time_.nanoseconds() != 0) {
-    const double dt = (timestamp - last_topic_msg_time_).seconds();
-    if (dt > 1e-6) {
-      topic_transform_freq_hz_ = static_cast<float>(1.0 / dt);
+  const int64_t timestamp_ns = timestamp.nanoseconds();
+  if (last_topic_msg_time_ns_ != 0) {
+    const int64_t dt_ns = timestamp_ns - last_topic_msg_time_ns_;
+    if (dt_ns > 1000) {
+      topic_transform_freq_hz_ = static_cast<float>(1e9 / static_cast<double>(dt_ns));
     }
   }
-  last_topic_msg_time_ = timestamp;
+  last_topic_msg_time_ns_ = timestamp_ns;
 }
 
 void Transformer::poseCallback(
@@ -119,13 +120,14 @@ void Transformer::poseCallback(
   transform_queue_[timestamp.nanoseconds()] = poseToEigen(transform_msg->pose);
 
   std::lock_guard<std::mutex> lock(pose_frequency_mutex_);
-  if (last_topic_msg_time_.nanoseconds() != 0) {
-    const double dt = (timestamp - last_topic_msg_time_).seconds();
-    if (dt > 1e-6) {
-      topic_transform_freq_hz_ = static_cast<float>(1.0 / dt);
+  const int64_t timestamp_ns = timestamp.nanoseconds();
+  if (last_topic_msg_time_ns_ != 0) {
+    const int64_t dt_ns = timestamp_ns - last_topic_msg_time_ns_;
+    if (dt_ns > 1000) {
+      topic_transform_freq_hz_ = static_cast<float>(1e9 / static_cast<double>(dt_ns));
     }
   }
-  last_topic_msg_time_ = timestamp;
+  last_topic_msg_time_ns_ = timestamp_ns;
 }
 
 bool Transformer::lookupTransformTf(

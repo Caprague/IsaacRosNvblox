@@ -27,6 +27,7 @@
 #include <mutex>
 #include <string>
 #include <unordered_map>
+#include <cstdint>
 
 #include <geometry_msgs/msg/pose_stamped.hpp>
 #include <geometry_msgs/msg/transform_stamped.hpp>
@@ -123,8 +124,8 @@ private:
 
   // Pose source frequency tracking
   mutable std::mutex pose_frequency_mutex_;
-  rclcpp::Time last_tf_lookup_time_;
-  rclcpp::Time last_topic_msg_time_;
+  int64_t last_tf_lookup_time_ns_ = 0;
+  int64_t last_topic_msg_time_ns_ = 0;
   float tf_lookup_freq_hz_ = 0.0f;
   float topic_transform_freq_hz_ = 0.0f;
 };
