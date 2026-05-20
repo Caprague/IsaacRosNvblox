@@ -690,85 +690,88 @@ void NvbloxNode::terrainCacheThreadFunc()
       }
     }
 
-    // Retry loop: attempt transform lookup + TSDF lock + terrain sampling
-    constexpr int kMaxRetries = 5;
-    constexpr auto kRetryInterval = std::chrono::milliseconds(2);
+    // Single attempt: if failed, directly keep last valid cache
     bool cache_updated = false;
+    bool transform_lookup_failed = false;
+    bool tsdf_lock_failed = false;
 
-    for (int retry = 0; retry < kMaxRetries && terrain_cache_running_; ++retry) {
-      // Look up transform
-      Transform T_L_C;
-      if (!transformer_.lookupTransformToGlobalFrame(
-              params_.map_clearing_frame_id, rclcpp::Time(0), &T_L_C)) {
-        std::this_thread::sleep_for(kRetryInterval);
-        continue;
-      }
-
+    // Look up transform
+    Transform T_L_C;
+    if (!transformer_.lookupTransformToGlobalFrame(
+            params_.map_clearing_frame_id, rclcpp::Time(0), &T_L_C)) {
+      transform_lookup_failed = true;
+    } else {
       // Try to acquire shared_lock
       std::shared_lock<std::shared_mutex> lock(tsdf_rw_mutex_, std::defer_lock);
       if (!lock.try_lock()) {
-        std::this_thread::sleep_for(kRetryInterval);
-        continue;
+        tsdf_lock_failed = true;
+      } else {
+        // Perform large-area terrain sampling via ray caster
+        std::vector<float> sample_x, sample_y, sample_z;
+        sample_x.resize(x_steps * y_steps, 0.0f);
+        sample_y.resize(x_steps * y_steps, 0.0f);
+        sample_z.resize(x_steps * y_steps, 0.0f);
+
+        auto* ray_caster = layer_publisher_->rayCaster();
+        if (ray_caster) {
+          ray_caster->sampleTerrainPoints(
+              sample_x, sample_y, sample_z,
+              static_mapper_->tsdf_layer(),
+              T_L_C,
+              range_x, range_y, resolution,
+              x_steps, y_steps,
+              0.0f, 0.0f,  // x_offset, y_offset centered
+              z_offset,
+              max_casting_depth,
+              *cuda_stream_);
+        }
+
+        // Convert absolute ground z to robot-relative height (robot_z - ground_z)
+        Vector3f robot_position = T_L_C.translation();
+        float robot_z = robot_position.z();
+        std::vector<float> height_data(sample_z.size());
+        for (size_t i = 0; i < sample_z.size(); ++i) {
+          height_data[i] = robot_z - sample_z[i];
+        }
+
+        // Update cache
+        {
+          std::lock_guard<std::mutex> cache_lock(terrain_cache_mutex_);
+          terrain_cache_.height_data = std::move(height_data);
+          terrain_cache_.pose = T_L_C;
+          terrain_cache_.timestamp = get_clock()->now();
+          terrain_cache_.valid = true;
+          terrain_cache_.x_steps = x_steps;
+          terrain_cache_.y_steps = y_steps;
+          terrain_cache_.range_x = range_x;
+          terrain_cache_.range_y = range_y;
+          terrain_cache_.resolution = resolution;
+          terrain_cache_.x_offset = 0.0f;
+          terrain_cache_.y_offset = 0.0f;
+          terrain_cache_.robot_z = robot_z;
+        }
+
+        // Publish terrain cache point cloud (global coordinates)
+        layer_publisher_->publishTerrainCachePointCloud(
+          sample_x, sample_y, sample_z,
+          params_.global_frame.get(), get_clock()->now());
+
+        cache_updated = true;
       }
-
-      // Perform large-area terrain sampling via ray caster
-      std::vector<float> sample_x, sample_y, sample_z;
-      sample_x.resize(x_steps * y_steps, 0.0f);
-      sample_y.resize(x_steps * y_steps, 0.0f);
-      sample_z.resize(x_steps * y_steps, 0.0f);
-
-      auto* ray_caster = layer_publisher_->rayCaster();
-      if (ray_caster) {
-        ray_caster->sampleTerrainPoints(
-            sample_x, sample_y, sample_z,
-            static_mapper_->tsdf_layer(),
-            T_L_C,
-            range_x, range_y, resolution,
-            x_steps, y_steps,
-            0.0f, 0.0f,  // x_offset, y_offset centered
-            z_offset,
-            max_casting_depth,
-            *cuda_stream_);
-      }
-
-      // Convert absolute ground z to robot-relative height (robot_z - ground_z)
-      Vector3f robot_position = T_L_C.translation();
-      float robot_z = robot_position.z();
-      std::vector<float> height_data(sample_z.size());
-      for (size_t i = 0; i < sample_z.size(); ++i) {
-        height_data[i] = robot_z - sample_z[i];
-      }
-
-      // Update cache
-      {
-        std::lock_guard<std::mutex> cache_lock(terrain_cache_mutex_);
-        terrain_cache_.height_data = std::move(height_data);
-        terrain_cache_.pose = T_L_C;
-        terrain_cache_.timestamp = get_clock()->now();
-        terrain_cache_.valid = true;
-        terrain_cache_.x_steps = x_steps;
-        terrain_cache_.y_steps = y_steps;
-        terrain_cache_.range_x = range_x;
-        terrain_cache_.range_y = range_y;
-        terrain_cache_.resolution = resolution;
-        terrain_cache_.x_offset = 0.0f;
-        terrain_cache_.y_offset = 0.0f;
-        terrain_cache_.robot_z = robot_z;
-      }
-
-      // Publish terrain cache point cloud (global coordinates)
-      layer_publisher_->publishTerrainCachePointCloud(
-        sample_x, sample_y, sample_z,
-        params_.global_frame.get(), get_clock()->now());
-
-      cache_updated = true;
-      break;  // success, exit retry loop
     }
 
     if (!cache_updated) {
-      RCLCPP_WARN_THROTTLE(get_logger(), *get_clock(), 1000,
-                           "Terrain cache update failed after %d retries; using last valid cache.",
-                           kMaxRetries);
+      if (transform_lookup_failed) {
+        RCLCPP_WARN_THROTTLE(get_logger(), *get_clock(), 1000,
+                             "Terrain cache update skipped: transform lookup failed (frame: %s). Using last valid cache.",
+                             params_.map_clearing_frame_id.c_str());
+      } else if (tsdf_lock_failed) {
+        RCLCPP_WARN_THROTTLE(get_logger(), *get_clock(), 1000,
+                             "Terrain cache update skipped: TSDF shared lock busy. Using last valid cache.");
+      } else {
+        RCLCPP_WARN_THROTTLE(get_logger(), *get_clock(), 1000,
+                             "Terrain cache update failed (unknown reason). Using last valid cache.");
+      }
     }
 
     std::this_thread::sleep_until(next_wake_time);
