@@ -24,7 +24,7 @@
     publish_navigation_height_scan_rate_hz: 10.0
     enable_heightscan_stats_logging: true
     heightscan_stats_rate_hz: 10.0
-    cuvslam_odom_topic: "/visual_slam/tracked_odometry"
+    cuvslam_odom_topic: "/visual_slam/tracking/odometry"
 
     # --- Terrain cache params (low-freq large-area sampling, 5Hz default) ---
     terrain_cache_range_x: 2.5

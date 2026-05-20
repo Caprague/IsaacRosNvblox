@@ -274,7 +274,7 @@ constexpr Param<float>::Description kHeightScanStatsRateHzParamDesc{
   "Rate of the dedicated height scan stats logging thread (Hz)."};
 
 constexpr StringParam::Description kCuvslamOdomTopicParamDesc{
-  "cuvslam_odom_topic", "/visual_slam/tracked_odometry",
+  "cuvslam_odom_topic", "/visual_slam/tracking/odometry",
   "ROS topic name for cuVSLAM odometry messages (nav_msgs/Odometry)."};
 
 // ======= TERRAIN CACHE PARAMS =======
