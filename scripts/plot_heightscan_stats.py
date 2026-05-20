@@ -18,7 +18,7 @@ import sys
 import matplotlib.pyplot as plt
 import numpy as np
 
-# 默认日志目录（相对于脚本所在项目的根目录）
+
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 PROJECT_ROOT = os.path.dirname(SCRIPT_DIR)
 DEFAULT_LOG_DIR = os.path.join(PROJECT_ROOT, "temp", "logs")
@@ -32,11 +32,11 @@ def find_latest_log(log_dir=None):
     files = sorted(glob.glob(pattern))
     if not files:
         return None
-    return files[-1]  # 按文件名排序（含日期时间），最新的在最后
+    return files[-1]
 
 
 def load_data(csv_path):
-    """读取 CSV，返回字典列表。"""
+    """读取 CSV，返回数据字典（所有字段均为 numpy 数组）。"""
     data = {
         "timestamp_sec": [],
         "mean_height": [],
@@ -63,14 +63,15 @@ def load_data(csv_path):
                 continue
             row = dict(zip(header, parts))
             for key in data:
-                if key in row:
-                    data[key].append(float(row[key]))
+                if key in row and row[key] != "":
+                    try:
+                        data[key].append(float(row[key]))
+                    except ValueError:
+                        pass
 
-    # 转为 numpy 数组
     for key in data:
-        data[key] = np.array(data[key])
+        data[key] = np.array(data[key], dtype=float)
 
-    # 时间轴归零（以第一帧为起点）
     if len(data["timestamp_sec"]) > 0:
         data["timestamp_sec"] -= data["timestamp_sec"][0]
 
@@ -81,217 +82,261 @@ def moving_average(arr, window=15):
     """对一维数组做滑动平均滤波，边界处缩短窗口避免 NaN。"""
     if len(arr) < window or window < 2:
         return arr.copy()
-    # 使用 cumsum 实现 O(n) 滑动平均
-    cumsum = np.cumsum(np.insert(arr, 0, 0))
+    cumsum = np.cumsum(np.insert(arr, 0, 0.0))
     result = (cumsum[window:] - cumsum[:-window]) / float(window)
-    # 边界处理：前 window-1 个点用逐渐增大的窗口
-    prefix = []
-    for i in range(1, window):
-        prefix.append(np.mean(arr[:i]))
+    prefix = [np.mean(arr[:i]) for i in range(1, window)]
     return np.concatenate([prefix, result])
 
 
-def plot(data, save_path=None):
-    # Determine which data fields are available
-    has_power_data = len(data["power_watt"]) > 0
-    has_odom_data = len(data["odom_x"]) > 0
-    has_odom_tf_transform_freq = len(data["odom_tf_transform_freq_hz"]) > 0
-    has_odom_topic_freq = len(data["odom_topic_freq_hz"]) > 0
-    has_odom_topic_transform_freq = len(data["odom_topic_transform_freq_hz"]) > 0
-    has_odom_any_freq = has_odom_tf_transform_freq or has_odom_topic_freq or has_odom_topic_transform_freq
-    has_cpu = len(data["cpu_load_percent"]) > 0 and np.any(data["cpu_load_percent"] >= 0)
-    has_gpu = len(data["gpu_load_percent"]) > 0 and np.any(data["gpu_load_percent"] >= 0)
-    has_mem = len(data["mem_used_mb"]) > 0 and np.any(data["mem_used_mb"] >= 0)
+def has_valid(data, key, valid_fn=None):
+    """字段存在且有有效值。"""
+    if key not in data:
+        return False
+    arr = data[key]
+    if arr.size == 0:
+        return False
+    if valid_fn is None:
+        return True
+    mask = valid_fn(arr)
+    return np.any(mask)
 
-    # Count charts: base 4 (height, freq, cpu/gpu, mem) + optional power + optional odom
-    n_plots = 4
-    if has_power_data:
-        n_plots += 1
-    if has_odom_data:
-        n_plots += 1
-    if has_odom_any_freq:
-        n_plots += 1
 
-    if not has_power_data:
-        print("[INFO] No 'power_watt' column found in CSV (old log format); skipping power chart.")
-    if not has_odom_data:
-        print("[INFO] No 'odom_x/y/z' columns found in CSV (old log format); skipping odom chart.")
-    if not has_odom_any_freq:
-        print("[INFO] No 'odom_tf_transform_freq_hz/odom_topic_freq_hz/odom_topic_transform_freq_hz' columns found in CSV (old log format); skipping odom freq chart.")
+def valid_series(t, arr, valid_fn=None):
+    """返回按有效值过滤后的 (t, arr)。"""
+    if arr.size == 0:
+        return np.array([]), np.array([])
+    if valid_fn is None:
+        n = min(len(t), len(arr))
+        return t[:n], arr[:n]
+    mask = valid_fn(arr)
+    n = min(np.sum(mask), len(t))
+    return t[:len(arr)][mask][:n], arr[mask][:n]
 
-    fig, axes = plt.subplots(n_plots, 1, figsize=(12, 14), sharex=True)
-    fig.suptitle("Nvblox LocomotionHeightScan Statistics", fontsize=14)
 
-    t = data["timestamp_sec"]
-    ax_idx = 0
+def save_figure(fig, save_path, suffix):
+    base, ext = os.path.splitext(save_path)
+    if ext:
+        out_path = f"{base}_{suffix}{ext}"
+    else:
+        out_path = f"{save_path}_{suffix}.png"
+    fig.savefig(out_path, dpi=300)
+    print(f"Figure saved to: {out_path}")
 
-    # 1. 高程均值与最大偏差
-    ax = axes[ax_idx]; ax_idx += 1
-    ax.plot(t, data["mean_height"], label="mean_height", color="C0")
-    ax.fill_between(
-        t,
-        data["mean_height"] - data["max_deviation"] / 2,
-        data["mean_height"] + data["max_deviation"] / 2,
-        alpha=0.3,
-        color="C0",
-        label="max_deviation band",
-    )
+
+def plot_height_status(data, t):
+    fig, axes = plt.subplots(2, 1, figsize=(12, 8), sharex=True)
+    fig.suptitle("Nvblox Height Status", fontsize=14)
+
+    # 1) 高程均值与偏差
+    ax = axes[0]
+    if has_valid(data, "mean_height"):
+        n = min(len(t), len(data["mean_height"]))
+        mean_h = data["mean_height"][:n]
+        tt = t[:n]
+        ax.plot(tt, mean_h, label="mean_height", color="C0")
+
+        if has_valid(data, "max_deviation"):
+            d_n = min(n, len(data["max_deviation"]))
+            dev = data["max_deviation"][:d_n]
+            tt2 = t[:d_n]
+            ax.fill_between(
+                tt2,
+                mean_h[:d_n] - dev / 2,
+                mean_h[:d_n] + dev / 2,
+                alpha=0.3,
+                color="C0",
+                label="max_deviation band",
+            )
+    else:
+        ax.text(0.5, 0.5, "No valid mean_height data", ha="center", va="center", transform=ax.transAxes)
+
     ax.set_ylabel("Height (m)")
     ax.legend(loc="upper right")
     ax.grid(True, linestyle="--", alpha=0.5)
     ax.set_title("Mean Height & Max Deviation")
 
-    # 2. 发布频率
-    ax = axes[ax_idx]; ax_idx += 1
-    freq_raw = data["publish_freq_hz"]
-    freq_smooth = moving_average(freq_raw, window=15)
-    ax.plot(t, freq_raw, color="C1", linewidth=0.8, alpha=0.4, label="raw")
-    ax.plot(t, freq_smooth, color="C1", linewidth=1.8, label="filtered")
+    # 2) HeightScan 发布频率
+    ax = axes[1]
+    if has_valid(data, "publish_freq_hz", lambda x: x >= 0):
+        tt, freq = valid_series(t, data["publish_freq_hz"], lambda x: x >= 0)
+        freq_smooth = moving_average(freq, window=15)
+        ax.plot(tt, freq, color="C1", linewidth=0.8, alpha=0.4, label="raw")
+        ax.plot(tt[:len(freq_smooth)], freq_smooth, color="C1", linewidth=1.8, label="filtered")
+        ax.set_ylim(0, 100)
+    else:
+        ax.text(0.5, 0.5, "No valid publish_freq_hz data", ha="center", va="center", transform=ax.transAxes)
+
     ax.set_ylabel("Freq (Hz)")
-    ax.set_ylim(0, 100)
+    ax.set_xlabel("Time (s)")
     ax.legend(loc="upper right")
     ax.grid(True, linestyle="--", alpha=0.5)
-    ax.set_title("Publish Frequency")
+    ax.set_title("HeightScan Publish Frequency")
 
-    # 3. CPU / GPU 负载
-    ax = axes[ax_idx]; ax_idx += 1
-    if has_cpu:
-        cpu_raw = data["cpu_load_percent"][data["cpu_load_percent"] >= 0]
-        t_cpu = t[data["cpu_load_percent"] >= 0]
-        cpu_smooth = moving_average(cpu_raw, window=15)
-        ax.plot(t_cpu, cpu_raw, color="C2", linewidth=0.8, alpha=0.4)
-        ax.plot(t_cpu, cpu_smooth, color="C2", linewidth=1.8, label="CPU")
-    else:
-        print("[INFO] No valid 'cpu_load_percent' data found; skipping CPU plot.")
-    if has_gpu:
-        gpu_raw = data["gpu_load_percent"][data["gpu_load_percent"] >= 0]
-        t_gpu = t[data["gpu_load_percent"] >= 0]
-        gpu_smooth = moving_average(gpu_raw, window=15)
-        ax.plot(t_gpu, gpu_raw, color="C3", linewidth=0.8, alpha=0.4)
-        ax.plot(t_gpu, gpu_smooth, color="C3", linewidth=1.8, label="GPU")
-    else:
-        print("[INFO] No valid 'gpu_load_percent' data found; skipping GPU plot.")
+    fig.tight_layout(rect=[0, 0, 1, 0.96])
+    return fig
+
+
+def plot_system_status(data, t):
+    fig, axes = plt.subplots(3, 1, figsize=(12, 10), sharex=True)
+    fig.suptitle("Nvblox System Status", fontsize=14)
+
+    # 1) CPU / GPU
+    ax = axes[0]
+    plotted = False
+    if has_valid(data, "cpu_load_percent", lambda x: x >= 0):
+        tt, cpu = valid_series(t, data["cpu_load_percent"], lambda x: x >= 0)
+        cpu_smooth = moving_average(cpu, window=15)
+        ax.plot(tt, cpu, color="C2", linewidth=0.8, alpha=0.4)
+        ax.plot(tt[:len(cpu_smooth)], cpu_smooth, color="C2", linewidth=1.8, label="CPU")
+        plotted = True
+    if has_valid(data, "gpu_load_percent", lambda x: x >= 0):
+        tt, gpu = valid_series(t, data["gpu_load_percent"], lambda x: x >= 0)
+        gpu_smooth = moving_average(gpu, window=15)
+        ax.plot(tt, gpu, color="C3", linewidth=0.8, alpha=0.4)
+        ax.plot(tt[:len(gpu_smooth)], gpu_smooth, color="C3", linewidth=1.8, label="GPU")
+        plotted = True
+    if not plotted:
+        ax.text(0.5, 0.5, "No valid CPU/GPU load data", ha="center", va="center", transform=ax.transAxes)
+
     ax.set_ylabel("Load (%)")
     ax.set_ylim(0, 105)
     ax.legend(loc="upper right")
     ax.grid(True, linestyle="--", alpha=0.5)
     ax.set_title("CPU & GPU Load")
 
-    # 4. 内存使用
-    ax = axes[ax_idx]; ax_idx += 1
-    valid_mem = data["mem_used_mb"] >= 0
-    if has_mem:
-        ax.plot(t[valid_mem], data["mem_used_mb"][valid_mem], label="Used", color="C4")
-        if len(data["mem_total_mb"]) > 0 and data["mem_total_mb"][0] > 0:
-            ax.axhline(
-                data["mem_total_mb"][0],
-                color="C4",
-                linestyle="--",
-                alpha=0.6,
-                label="Total",
-            )
+    # 2) 内存
+    ax = axes[1]
+    if has_valid(data, "mem_used_mb", lambda x: x >= 0):
+        tt, mem_used = valid_series(t, data["mem_used_mb"], lambda x: x >= 0)
+        ax.plot(tt, mem_used, label="Used", color="C4")
+
+        if has_valid(data, "mem_total_mb", lambda x: x > 0):
+            total = data["mem_total_mb"][data["mem_total_mb"] > 0]
+            if total.size > 0:
+                ax.axhline(total[0], color="C4", linestyle="--", alpha=0.6, label="Total")
     else:
-        print("[INFO] No valid 'mem_used_mb' data found; skipping memory plot.")
+        ax.text(0.5, 0.5, "No valid memory data", ha="center", va="center", transform=ax.transAxes)
+
     ax.set_ylabel("Memory (MB)")
     ax.legend(loc="upper right")
     ax.grid(True, linestyle="--", alpha=0.5)
     ax.set_title("Memory Usage")
 
-    # 5. 整机功率
-    if has_power_data:
-        ax = axes[ax_idx]; ax_idx += 1
-        valid_power = data["power_watt"] >= 0
-        if np.any(valid_power):
-            p_raw = data["power_watt"][valid_power]
-            t_power = t[valid_power]
-            p_smooth = moving_average(p_raw, window=15)
-            ax.plot(t_power, p_raw, color="C5", linewidth=0.8, alpha=0.4, label="raw")
-            ax.plot(t_power, p_smooth, color="C5", linewidth=1.8, label="filtered")
-        else:
-            print("[INFO] No valid 'power_watt' data found; power sensor may not be available.")
-            ax.text(0.5, 0.5, "No power data available", ha='center', va='center',
-                    transform=ax.transAxes, fontsize=14, alpha=0.5)
-        ax.set_ylabel("Power (W)")
-        ax.legend(loc="upper right")
-        ax.grid(True, linestyle="--", alpha=0.5)
-        ax.set_title("System Power Consumption")
+    # 3) 功率
+    ax = axes[2]
+    if has_valid(data, "power_watt", lambda x: x >= 0):
+        tt, pw = valid_series(t, data["power_watt"], lambda x: x >= 0)
+        pw_smooth = moving_average(pw, window=15)
+        ax.plot(tt, pw, color="C5", linewidth=0.8, alpha=0.4, label="raw")
+        ax.plot(tt[:len(pw_smooth)], pw_smooth, color="C5", linewidth=1.8, label="filtered")
+    else:
+        ax.text(0.5, 0.5, "No valid power data", ha="center", va="center", transform=ax.transAxes)
 
-    # 6. 里程计 x/y/z
-    if has_odom_data:
-        ax = axes[ax_idx]; ax_idx += 1
-        if len(data["odom_x"]) > 0:
-            ax.plot(t[:len(data["odom_x"])], data["odom_x"], label="X", color="C6")
-        if len(data["odom_y"]) > 0:
-            ax.plot(t[:len(data["odom_y"])], data["odom_y"], label="Y", color="C7")
-        if len(data["odom_z"]) > 0:
-            ax.plot(t[:len(data["odom_z"])], data["odom_z"], label="Z", color="C8")
-        ax.set_ylabel("Position (m)")
-        ax.legend(loc="upper right")
-        ax.grid(True, linestyle="--", alpha=0.5)
-        ax.set_title("cuVSLAM Odometry X/Y/Z")
+    ax.set_ylabel("Power (W)")
+    ax.set_xlabel("Time (s)")
+    ax.legend(loc="upper right")
+    ax.grid(True, linestyle="--", alpha=0.5)
+    ax.set_title("System Power Consumption")
 
-    # 7. 里程计频率（TF / 里程计话题 / pose-transform 话题同图）
-    if has_odom_any_freq:
-        ax = axes[ax_idx]; ax_idx += 1
-        if has_odom_tf_transform_freq and len(data["odom_tf_transform_freq_hz"]) > 0:
-            odom_tf_raw = data["odom_tf_transform_freq_hz"]
-            odom_tf_smooth = moving_average(odom_tf_raw, window=15)
-            ax.plot(t[:len(odom_tf_raw)], odom_tf_raw, color="C9", linewidth=0.8, alpha=0.35, label="TF raw")
-            ax.plot(t[:len(odom_tf_smooth)], odom_tf_smooth, color="C9", linewidth=1.8, label="TF filtered")
-        if has_odom_topic_freq and len(data["odom_topic_freq_hz"]) > 0:
-            odom_topic_raw = data["odom_topic_freq_hz"]
-            odom_topic_smooth = moving_average(odom_topic_raw, window=15)
-            ax.plot(t[:len(odom_topic_raw)], odom_topic_raw, color="C10", linewidth=0.8, alpha=0.35, label="Odom topic raw")
-            ax.plot(t[:len(odom_topic_smooth)], odom_topic_smooth, color="C10", linewidth=1.8, label="Odom topic filtered")
-        if has_odom_topic_transform_freq and len(data["odom_topic_transform_freq_hz"]) > 0:
-            odom_transform_raw = data["odom_topic_transform_freq_hz"]
-            odom_transform_smooth = moving_average(odom_transform_raw, window=15)
-            ax.plot(t[:len(odom_transform_raw)], odom_transform_raw, color="C11", linewidth=0.8, alpha=0.35, label="Pose/transform topic raw")
-            ax.plot(t[:len(odom_transform_smooth)], odom_transform_smooth, color="C11", linewidth=1.8, label="Pose/transform topic filtered")
-        ax.set_ylabel("Freq (Hz)")
-        ax.set_ylim(0, 100)
-        ax.legend(loc="upper right")
-        ax.grid(True, linestyle="--", alpha=0.5)
-        ax.set_title("Odometry Frequency (TF vs Topics)")
+    fig.tight_layout(rect=[0, 0, 1, 0.96])
+    return fig
 
-    # Set xlabel on last axis
-    axes[-1].set_xlabel("Time (s)")
 
-    plt.tight_layout(rect=[0, 0, 1, 0.96])
+def plot_odom_status(data, t):
+    fig, axes = plt.subplots(2, 1, figsize=(12, 8), sharex=True)
+    fig.suptitle("Nvblox Odometry Status", fontsize=14)
+
+    # 1) 里程计位置
+    ax = axes[0]
+    plotted = False
+    for key, color, label in [("odom_x", "C6", "X"), ("odom_y", "C7", "Y"), ("odom_z", "C8", "Z")]:
+        if has_valid(data, key):
+            n = min(len(t), len(data[key]))
+            ax.plot(t[:n], data[key][:n], label=label, color=color)
+            plotted = True
+    if not plotted:
+        ax.text(0.5, 0.5, "No valid odom position data", ha="center", va="center", transform=ax.transAxes)
+
+    ax.set_ylabel("Position (m)")
+    ax.legend(loc="upper right")
+    ax.grid(True, linestyle="--", alpha=0.5)
+    ax.set_title("Odometry X/Y/Z")
+
+    # 2) 里程计频率
+    ax = axes[1]
+    freq_items = [
+        ("odom_tf_transform_freq_hz", "C9", "TF transform"),
+        ("odom_topic_freq_hz", "C10", "Odom topic"),
+        ("odom_topic_transform_freq_hz", "C11", "Pose/transform topic"),
+    ]
+    plotted = False
+    for key, color, name in freq_items:
+        if has_valid(data, key, lambda x: x >= 0):
+            tt, raw = valid_series(t, data[key], lambda x: x >= 0)
+            smooth = moving_average(raw, window=15)
+            ax.plot(tt, raw, color=color, linewidth=0.8, alpha=0.35, label=f"{name} raw")
+            ax.plot(tt[:len(smooth)], smooth, color=color, linewidth=1.8, label=f"{name} filtered")
+            plotted = True
+
+    if not plotted:
+        ax.text(0.5, 0.5, "No valid odometry frequency data", ha="center", va="center", transform=ax.transAxes)
+
+    ax.set_ylabel("Freq (Hz)")
+    ax.set_ylim(0, 100)
+    ax.set_xlabel("Time (s)")
+    ax.legend(loc="upper right")
+    ax.grid(True, linestyle="--", alpha=0.5)
+    ax.set_title("Odometry Frequency")
+
+    fig.tight_layout(rect=[0, 0, 1, 0.96])
+    return fig
+
+
+def plot(data, save_path=None):
+    if len(data["timestamp_sec"]) == 0:
+        print("Error: no valid timestamp data.", file=sys.stderr)
+        return
+
+    t = data["timestamp_sec"]
+
+    fig_height = plot_height_status(data, t)
+    fig_system = plot_system_status(data, t)
+    fig_odom = plot_odom_status(data, t)
 
     if save_path:
-        plt.savefig(save_path, dpi=300)
-        print(f"Figure saved to: {save_path}")
+        save_figure(fig_height, save_path, "height_status")
+        save_figure(fig_system, save_path, "system_status")
+        save_figure(fig_odom, save_path, "odometry_status")
+        plt.close(fig_height)
+        plt.close(fig_system)
+        plt.close(fig_odom)
     else:
         plt.show()
 
 
 def main():
-    parser = argparse.ArgumentParser(
-        description="Plot HeightScan statistics from CSV log.")
+    parser = argparse.ArgumentParser(description="Plot HeightScan statistics from CSV log.")
     parser.add_argument(
         "csv",
         nargs="?",
         default=None,
         help="Path to the CSV log file. If omitted, auto-detects the latest "
-             f"file in {DEFAULT_LOG_DIR}",
+        f"file in {DEFAULT_LOG_DIR}",
     )
     parser.add_argument(
         "--save",
         "-s",
         metavar="PATH",
-        help="Save figure to file instead of displaying",
+        help="Save figures to files instead of displaying",
     )
     args = parser.parse_args()
 
-    # 确定要读取的 CSV 文件
     csv_path = args.csv
     if csv_path is None:
         csv_path = find_latest_log()
         if csv_path is None:
             print(f"Error: no CSV files found in {DEFAULT_LOG_DIR}", file=sys.stderr)
-            print("Specify a file path explicitly: "
-                  "python3 plot_heightscan_stats.py <path>", file=sys.stderr)
+            print("Specify a file path explicitly: python3 plot_heightscan_stats.py <path>", file=sys.stderr)
             sys.exit(1)
         print(f"Auto-detected latest log: {csv_path}")
 
