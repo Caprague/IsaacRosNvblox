@@ -12,7 +12,7 @@
 
     # Parameters governing frequency of different processing steps in the reconstruction pipeline.
     # Processing happens every n:th tick_period. <=0 means that no processing take place
-    tick_period_ms: 10
+    tick_period_ms: 20
 
     # --- Integration thread rates (event-driven, these control per-queue processing frequency) ---
     integrate_depth_rate_hz: 30.0
@@ -27,11 +27,11 @@
     cuvslam_odom_topic: "/visual_slam/tracking/odometry"
 
     # --- Terrain cache params (low-freq large-area sampling, 5Hz default) ---
-    terrain_cache_range_x: 2.5
-    terrain_cache_range_y: 2.5
+    terrain_cache_range_x: 4.0
+    terrain_cache_range_y: 4.0
     terrain_cache_resolution: 0.1
-    terrain_cache_update_rate_hz: 5.0
-    terrain_cache_max_casting_depth: 3.0
+    terrain_cache_update_rate_hz: 10.0
+    terrain_cache_max_casting_depth: 2.0
     terrain_cache_z_offset: 0.5
 
     # --- Ground plane initialization params ---
@@ -45,7 +45,7 @@
     locomotion_height_scan_x_offset: 0.0
     locomotion_height_scan_y_offset: 0.0
     locomotion_height_scan_z_offset: 0.5
-    locomotion_height_scan_max_casting_depth: 3.0
+    locomotion_height_scan_max_casting_depth: 2.5
     
     # --- Locomotion height scan online drift compensation ---
     # Enable/disable the center-based drift compensation for locomotion height scan.
@@ -61,19 +61,19 @@
     # --- Maintenance thread rates ---
     # Thread wake-up rate = max(decay_tsdf, decay_dynamic_occupancy, clear_map_outside_radius)
     # Each operation executes at its own rate via shouldProcess gating
-    decay_tsdf_rate_hz: 5.0
-    decay_dynamic_occupancy_rate_hz: 5.0
+    decay_tsdf_rate_hz: 2.5
+    decay_dynamic_occupancy_rate_hz: 2.5
     clear_map_outside_radius_rate_hz: 1.0
 
     # --- Output thread rates ---
     # Thread wake-up rate = max(update_esdf, publish_layer, publish_debug_vis)
     # Each operation executes at its own rate via shouldProcess gating
-    update_esdf_rate_hz: 5.0
-    publish_layer_rate_hz: 5.0
+    update_esdf_rate_hz: 2.0
+    publish_layer_rate_hz: 2.0
     publish_debug_vis_rate_hz: 2.0
 
     # --- Other processing rates ---
-    update_mesh_rate_hz: 5.0
+    update_mesh_rate_hz: 2.0
 
     # printing statistics on console
     print_rates_to_console: true
@@ -99,10 +99,10 @@
     # Input queues
     maximum_input_queue_length: 10
     # Map clearing settings
-    map_clearing_radius_m: 3.0 # no map clearing if < 0.0
+    map_clearing_radius_m: 4.0 # no map clearing if < 0.0
     map_clearing_frame_id: "base_link"
     # Map maintenance distance
-    distance_map_local_maintenance: 3.0
+    distance_map_local_maintenance: 4.0
     # QoS settings
     input_qos: "SYSTEM_DEFAULT"
     # Visualization
@@ -112,10 +112,10 @@
     workspace_height_bounds_visualization_side_length: 10.0
     layer_visualization_min_tsdf_weight: 0.1
     layer_visualization_exclusion_height_m: 2.0
-    layer_visualization_exclusion_radius_m: 2.0
+    layer_visualization_exclusion_radius_m: 4.0
     layer_visualization_undo_gamma_correction: false
-    max_back_projection_distance: 3.0
-    back_projection_subsampling: 1 # no subsampling if == 1
+    max_back_projection_distance: 4.0
+    back_projection_subsampling: 2 # no subsampling if == 1
     layer_streamer_bandwidth_limit_mbps: -1.0 # unlimited
 
     multi_mapper:
@@ -127,8 +127,8 @@
       do_depth_preprocessing: false
       depth_preprocessing_num_dilations: 3
       # projective integrator (tsdf/color/occupancy)
-      projective_integrator_max_integration_distance_m: 3.0
-      projective_integrator_truncation_distance_vox: 3.0
+      projective_integrator_max_integration_distance_m: 4.0
+      projective_integrator_truncation_distance_vox: 4.0
       projective_integrator_weighting_mode: "inverse_square_tsdf_distance_penalty"
       projective_integrator_max_weight: 5.0
       projective_tsdf_integrator_invalid_depth_decay_factor: -1.0
@@ -158,8 +158,8 @@
       tsdf_decayed_weight_threshold: 0.05
       exclude_last_view_from_decay: true
       tsdf_set_free_distance_on_decayed: false
-      tsdf_decayed_free_distance_vox: 2.0
+      tsdf_decayed_free_distance_vox: 4.0
       decay_integrator_deallocate_decayed_blocks: true
       # mesh streamer
       layer_streamer_exclusion_height_m: 2.0
-      layer_streamer_exclusion_radius_m: 2.0
+      layer_streamer_exclusion_radius_m: 4.0
