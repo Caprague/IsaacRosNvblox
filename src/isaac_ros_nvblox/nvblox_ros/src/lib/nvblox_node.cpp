@@ -764,7 +764,7 @@ void NvbloxNode::terrainCacheThreadFunc()
       if (transform_lookup_failed) {
         RCLCPP_WARN_THROTTLE(get_logger(), *get_clock(), 1000,
                              "Terrain cache update skipped: transform lookup failed (frame: %s). Using last valid cache.",
-                             params_.map_clearing_frame_id.c_str());
+                             params_.map_clearing_frame_id.get().c_str());
       } else if (tsdf_lock_failed) {
         RCLCPP_WARN_THROTTLE(get_logger(), *get_clock(), 1000,
                              "Terrain cache update skipped: TSDF shared lock busy. Using last valid cache.");
