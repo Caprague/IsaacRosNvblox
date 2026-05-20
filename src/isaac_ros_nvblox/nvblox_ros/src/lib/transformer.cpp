@@ -61,7 +61,7 @@ bool Transformer::lookupTransformToGlobalFrame(
     if (success) {
       std::lock_guard<std::mutex> lock(pose_frequency_mutex_);
       const int64_t sample_time_ns =
-        (timestamp == rclcpp::Time(0)) ? node_->get_clock()->now().nanoseconds() : timestamp.nanoseconds();
+        (timestamp.nanoseconds() == 0) ? node_->get_clock()->now().nanoseconds() : timestamp.nanoseconds();
       if (last_tf_lookup_time_ns_ != 0) {
         const int64_t dt_ns = sample_time_ns - last_tf_lookup_time_ns_;
         if (dt_ns > 1000) {
@@ -164,7 +164,7 @@ bool Transformer::lookupTransformTf(
 bool Transformer::lookupTransformQueue(const rclcpp::Time & timestamp, Transform * transform)
 {
   // Get latest transform
-  if (timestamp == rclcpp::Time(0)) {
+  if (timestamp.nanoseconds() == 0) {
     if (transform_queue_.empty()) {
       return false;
     }
