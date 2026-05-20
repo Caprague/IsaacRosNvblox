@@ -509,28 +509,25 @@ private:
       }
       else
       {
-          // 回退模式：未启用底盘IMU时，假设base_link与camera_link之间只有安装俯仰角差异。
-          // alignment_quaternion_已经描述了将当前相机姿态校正到水平基准所需的旋转，
-          // 这里仅提取其中的pitch分量，并取反作为camera_link→base_link的俯仰补偿，
-          // 使base_link通过现有TF链传递后也落在odom_horizontal定义的水平基准上。
-          const Eigen::Matrix3d R_horizontal_camera = this->alignment_quaternion_.toRotationMatrix();
-          double camera_pitch_rad = std::asin(
-            std::max(-1.0, std::min(1.0, -R_horizontal_camera(2, 0))));
-
-          q_cam_base = Eigen::Quaterniond(
-            Eigen::AngleAxisd(-camera_pitch_rad, Eigen::Vector3d::UnitY()));
+          // 回退模式：先把 camera_link 姿态校正到水平基准（camera_horizontal_link），
+          // 再在该水平坐标系下按固定负向位移反推 base_link。
+          //
+          // alignment_quaternion_ 为 odom_horizontal -> map(=camera_link) 的旋转，
+          // 故其逆可视作 camera_link -> camera_horizontal_link 的旋转。
+          const Eigen::Quaterniond q_horizontal_camera = this->alignment_quaternion_.inverse();
+          q_cam_base = q_horizontal_camera;
           q_cam_base.normalize();
-          t_cam_base = Eigen::Vector3d(
-            -this->camera_base_translation_[0],
-            -this->camera_base_translation_[1],
-            -this->camera_base_translation_[2]
-          );
+
+          // 在水平坐标系下，base 相对 camera 的位移取固定值 -camera_base_translation_。
+          // 需要表达为 camera_link 坐标下平移：t_cam_base = R_cam_horizontal * t_horizontal_base。
+          const Eigen::Vector3d t_horizontal_base = -this->camera_base_translation_;
+          t_cam_base = q_cam_base.toRotationMatrix() * t_horizontal_base;
 
           RCLCPP_INFO_THROTTLE(
             this->get_logger(), *this->get_clock(), 5000,
-            "Fallback camera->base pitch compensation: camera_pitch=%.2f deg, q_cam_base=[w=%.4f, x=%.4f, y=%.4f, z=%.4f]",
-            camera_pitch_rad * 180.0 / M_PI,
-            q_cam_base.w(), q_cam_base.x(), q_cam_base.y(), q_cam_base.z());
+            "Fallback camera->base horizontal correction: q_cam_base=[w=%.4f, x=%.4f, y=%.4f, z=%.4f], t_cam_base=[%.4f, %.4f, %.4f]",
+            q_cam_base.w(), q_cam_base.x(), q_cam_base.y(), q_cam_base.z(),
+            t_cam_base.x(), t_cam_base.y(), t_cam_base.z());
       }
       
       transform.transform.translation.x = t_cam_base[0];
