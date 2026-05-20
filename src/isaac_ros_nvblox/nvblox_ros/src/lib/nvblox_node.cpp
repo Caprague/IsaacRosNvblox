@@ -25,6 +25,8 @@
 
 #include <chrono>
 #include <cmath>
+#include <cstdio>
+#include <array>
 #include <filesystem>
 #include <fstream>
 #include <iomanip>
@@ -2558,44 +2560,59 @@ float NvbloxNode::getGpuLoadPercent()
 
 float NvbloxNode::getPowerWatt()
 {
-  // Jetson Xavier/Orin: power rail readings via INA3221 hwmon
-  // Try common hwmon paths for SOC power rail
-  const std::vector<std::string> power_paths = {
-    "/sys/devices/virtual/hwmon/hwmon4/in0_input",       // Xavier NX: VDD_IN
-    "/sys/devices/virtual/hwmon/hwmon5/in0_input",       // Orin: VDD_IN
-    "/sys/power/power_supply/battery/voltage_now",        // fallback
-  };
+  // Use tegrastats once and parse VDD_IN xxxmW
+  // Example token: "VDD_IN 9395mW/9375mW"
+  constexpr size_t kBufferSize = 1024;
+  std::array<char, kBufferSize> buffer{};
 
-  for (const auto& path : power_paths) {
-    std::ifstream f(path);
-    if (f.is_open()) {
-      double raw = 0.0;
-      f >> raw;
-      f.close();
-      // in0_input is in millivolts; on Jetson INA3221 channels,
-      // power in Watts = voltage(V) * current(A), but this node only gives voltage.
-      // Use /sys/devices/virtual/hwmon/hwmon*/power*_input if available (direct mW).
-      if (raw > 0) {
-        return static_cast<float>(raw / 1000.0);  // mV -> V (best-effort estimate)
-      }
-    }
+  FILE * pipe = popen("tegrastats --interval 1000 2>/dev/null | head -n 1", "r");
+  if (pipe == nullptr) {
+    return -1.0f;
   }
 
-  // Try direct power readings (mW) from powerN_input files
-  for (int hw = 0; hw <= 10; ++hw) {
-    std::string pwr_path = "/sys/devices/virtual/hwmon/hwmon" + std::to_string(hw) + "/power1_input";
-    std::ifstream f(pwr_path);
-    if (f.is_open()) {
-      double raw_mw = 0.0;
-      f >> raw_mw;
-      f.close();
-      if (raw_mw > 0) {
-        return static_cast<float>(raw_mw / 1000.0);  // mW -> W
-      }
-    }
+  const char * read_result = fgets(buffer.data(), static_cast<int>(buffer.size()), pipe);
+  pclose(pipe);
+  if (read_result == nullptr) {
+    return -1.0f;
   }
 
-  return -1.0f;
+  const std::string line(buffer.data());
+  const std::string key = "VDD_IN ";
+  const size_t pos = line.find(key);
+  if (pos == std::string::npos) {
+    return -1.0f;
+  }
+
+  const size_t value_start = pos + key.size();
+  const size_t mw_pos = line.find("mW", value_start);
+  if (mw_pos == std::string::npos || mw_pos <= value_start) {
+    return -1.0f;
+  }
+
+  size_t value_end = mw_pos;
+  while (value_end > value_start && std::isdigit(static_cast<unsigned char>(line[value_end - 1])) == 0) {
+    --value_end;
+  }
+
+  size_t value_begin = value_end;
+  while (value_begin > value_start && std::isdigit(static_cast<unsigned char>(line[value_begin - 1])) != 0) {
+    --value_begin;
+  }
+
+  if (value_begin >= value_end) {
+    return -1.0f;
+  }
+
+  const std::string value_str = line.substr(value_begin, value_end - value_begin);
+  try {
+    const double power_mw = std::stod(value_str);
+    if (power_mw <= 0.0) {
+      return -1.0f;
+    }
+    return static_cast<float>(power_mw / 1000.0);  // mW -> W
+  } catch (...) {
+    return -1.0f;
+  }
 }
 
 }  // namespace nvblox
