@@ -2323,6 +2323,7 @@ void NvbloxNode::heightScanStatsThreadFunc()
   const double stats_period_sec = 1.0 / params_.heightscan_stats_rate_hz.get();
   const auto period = std::chrono::duration<double>(stats_period_sec);
   auto next_wake_time = std::chrono::steady_clock::now() + period;
+  int no_odom_data_warn_counter = 0;
 
   RCLCPP_INFO(get_logger(),
               "Height scan stats thread started at %.1f Hz",
@@ -2341,17 +2342,29 @@ void NvbloxNode::heightScanStatsThreadFunc()
     // Read cached odometry data
     float odom_topic_freq = 0.0f;
     double odom_x = 0.0, odom_y = 0.0, odom_z = 0.0;
+    bool has_valid_odom_pose = false;
     {
       std::lock_guard<std::mutex> lock(odom_data_mutex_);
       odom_topic_freq = odom_topic_freq_hz_;
       odom_x = odom_x_;
       odom_y = odom_y_;
       odom_z = odom_z_;
+      has_valid_odom_pose = (odom_last_time_.nanoseconds() != 0);
     }
 
     float odom_tf_transform_freq = 0.0f;
     float odom_topic_transform_freq = 0.0f;
     transformer_.getPoseSourceFrequencies(&odom_tf_transform_freq, &odom_topic_transform_freq);
+
+    if (!has_valid_odom_pose || (odom_topic_freq <= 0.0f && odom_topic_transform_freq <= 0.0f)) {
+      ++no_odom_data_warn_counter;
+      if (no_odom_data_warn_counter % 20 == 0) {
+        RCLCPP_WARN(get_logger(),
+                    "No valid odometry updates yet. Check cuvslam_odom_topic and pose/transform topic wiring.");
+      }
+    } else {
+      no_odom_data_warn_counter = 0;
+    }
 
     if (heightscan_log_file_.is_open() && !heights.empty()) {
       logHeightScanStats(

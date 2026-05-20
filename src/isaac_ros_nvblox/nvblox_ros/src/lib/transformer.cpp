@@ -58,14 +58,19 @@ bool Transformer::lookupTransformToGlobalFrame(
     // Then I guess we're using TF.
     // Try to look up the pose in TF.
     const bool success = lookupTransformTf(global_frame_, sensor_frame, timestamp, transform);
-    if (success) {
+    if (success && sensor_frame == pose_frame_) {
       std::lock_guard<std::mutex> lock(pose_frequency_mutex_);
       const int64_t sample_time_ns =
         (timestamp.nanoseconds() == 0) ? node_->get_clock()->now().nanoseconds() : timestamp.nanoseconds();
       if (last_tf_lookup_time_ns_ != 0) {
+        constexpr int64_t kMinDtNs = 1000000;  // 1 ms => max 1000 Hz
+        constexpr float kMaxValidFreqHz = 200.0f;
         const int64_t dt_ns = sample_time_ns - last_tf_lookup_time_ns_;
-        if (dt_ns > 1000) {
-          tf_lookup_freq_hz_ = static_cast<float>(1e9 / static_cast<double>(dt_ns));
+        if (dt_ns >= kMinDtNs) {
+          const float freq_hz = static_cast<float>(1e9 / static_cast<double>(dt_ns));
+          if (freq_hz <= kMaxValidFreqHz) {
+            tf_lookup_freq_hz_ = freq_hz;
+          }
         }
       }
       last_tf_lookup_time_ns_ = sample_time_ns;
@@ -105,9 +110,14 @@ void Transformer::transformCallback(
   std::lock_guard<std::mutex> lock(pose_frequency_mutex_);
   const int64_t timestamp_ns = timestamp.nanoseconds();
   if (last_topic_msg_time_ns_ != 0) {
+    constexpr int64_t kMinDtNs = 1000000;  // 1 ms => max 1000 Hz
+    constexpr float kMaxValidFreqHz = 200.0f;
     const int64_t dt_ns = timestamp_ns - last_topic_msg_time_ns_;
-    if (dt_ns > 1000) {
-      topic_transform_freq_hz_ = static_cast<float>(1e9 / static_cast<double>(dt_ns));
+    if (dt_ns >= kMinDtNs) {
+      const float freq_hz = static_cast<float>(1e9 / static_cast<double>(dt_ns));
+      if (freq_hz <= kMaxValidFreqHz) {
+        topic_transform_freq_hz_ = freq_hz;
+      }
     }
   }
   last_topic_msg_time_ns_ = timestamp_ns;
@@ -122,9 +132,14 @@ void Transformer::poseCallback(
   std::lock_guard<std::mutex> lock(pose_frequency_mutex_);
   const int64_t timestamp_ns = timestamp.nanoseconds();
   if (last_topic_msg_time_ns_ != 0) {
+    constexpr int64_t kMinDtNs = 1000000;  // 1 ms => max 1000 Hz
+    constexpr float kMaxValidFreqHz = 200.0f;
     const int64_t dt_ns = timestamp_ns - last_topic_msg_time_ns_;
-    if (dt_ns > 1000) {
-      topic_transform_freq_hz_ = static_cast<float>(1e9 / static_cast<double>(dt_ns));
+    if (dt_ns >= kMinDtNs) {
+      const float freq_hz = static_cast<float>(1e9 / static_cast<double>(dt_ns));
+      if (freq_hz <= kMaxValidFreqHz) {
+        topic_transform_freq_hz_ = freq_hz;
+      }
     }
   }
   last_topic_msg_time_ns_ = timestamp_ns;
