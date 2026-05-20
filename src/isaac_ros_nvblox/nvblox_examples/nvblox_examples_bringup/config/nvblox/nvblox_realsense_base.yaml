@@ -23,7 +23,7 @@
     publish_locomotion_height_scan_rate_hz: 25.0
     publish_navigation_height_scan_rate_hz: 10.0
     enable_heightscan_stats_logging: true
-    heightscan_stats_rate_hz: 10.0
+    heightscan_stats_rate_hz: 20.0
     cuvslam_odom_topic: "/visual_slam/tracking/odometry"
 
     # --- Terrain cache params (low-freq large-area sampling, 5Hz default) ---
@@ -61,16 +61,16 @@
     # --- Maintenance thread rates ---
     # Thread wake-up rate = max(decay_tsdf, decay_dynamic_occupancy, clear_map_outside_radius)
     # Each operation executes at its own rate via shouldProcess gating
-    decay_tsdf_rate_hz: 2.5
-    decay_dynamic_occupancy_rate_hz: 2.5
+    decay_tsdf_rate_hz: 5.0
+    decay_dynamic_occupancy_rate_hz: 5.0
     clear_map_outside_radius_rate_hz: 1.0
 
     # --- Output thread rates ---
     # Thread wake-up rate = max(update_esdf, publish_layer, publish_debug_vis)
     # Each operation executes at its own rate via shouldProcess gating
     update_esdf_rate_hz: 2.0
-    publish_layer_rate_hz: 2.0
-    publish_debug_vis_rate_hz: 2.0
+    publish_layer_rate_hz: 5.0
+    publish_debug_vis_rate_hz: 5.0
 
     # --- Other processing rates ---
     update_mesh_rate_hz: 2.0
