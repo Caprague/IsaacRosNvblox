@@ -135,6 +135,13 @@ esekfom::esekf<state_ikfom, 12, input_ikfom> kf;
 state_ikfom state_point;
 vect3 pos_lid;
 
+// High-frequency IMU-propagated odometry (keep original /Odometry unchanged)
+std::mutex imu_prop_mutex;
+bool imu_prop_initialized = false;
+double imu_prop_last_time = -1.0;
+state_ikfom imu_prop_state;
+rclcpp::Publisher<nav_msgs::msg::Odometry>::SharedPtr pubOdomImuProp;
+
 nav_msgs::msg::Path path;
 nav_msgs::msg::Odometry odomAftMapped;
 geometry_msgs::msg::Quaternion geoQuat;
@@ -350,9 +357,7 @@ void livox_pcl_cbk(const livox_ros_driver2::msg::CustomMsg::UniquePtr msg)
 void imu_cbk(const sensor_msgs::msg::Imu::UniquePtr msg_in)
 {
     publish_count ++;
-    // cout<<"IMU got at: "<<msg_in->header.stamp.toSec()<<endl;
     sensor_msgs::msg::Imu::SharedPtr msg(new sensor_msgs::msg::Imu(*msg_in));
-    
 
     msg->header.stamp = get_ros_time(get_time_sec(msg_in->header.stamp) - time_diff_lidar_to_imu);
     if (abs(timediff_lidar_wrt_imu) > 0.1 && time_sync_en)
@@ -376,6 +381,58 @@ void imu_cbk(const sensor_msgs::msg::Imu::UniquePtr msg_in)
     imu_buffer.push_back(msg);
     mtx_buffer.unlock();
     sig_buffer.notify_all();
+
+    // Publish high-frequency IMU-propagated odometry (predict-only between LiDAR updates)
+    {
+        std::lock_guard<std::mutex> lock(imu_prop_mutex);
+        if (!imu_prop_initialized) {
+            return;
+        }
+
+        const double t_cur = get_time_sec(msg->header.stamp);
+        double dt = t_cur - imu_prop_last_time;
+        if (dt <= 0.0 || dt > 0.05) {
+            imu_prop_last_time = t_cur;
+            return;
+        }
+
+        input_ikfom in;
+        V3D gyro(msg->angular_velocity.x, msg->angular_velocity.y, msg->angular_velocity.z);
+        V3D acc(msg->linear_acceleration.x, msg->linear_acceleration.y, msg->linear_acceleration.z);
+        in.gyro = gyro;
+        in.acc = acc * G_m_s2 / p_imu->mean_acc.norm();
+
+        auto Q_pred = process_noise_cov();
+        Q_pred.block<3, 3>(0, 0).diagonal() = p_imu->cov_gyr;
+        Q_pred.block<3, 3>(3, 3).diagonal() = p_imu->cov_acc;
+        Q_pred.block<3, 3>(6, 6).diagonal() = p_imu->cov_bias_gyr;
+        Q_pred.block<3, 3>(9, 9).diagonal() = p_imu->cov_bias_acc;
+
+        esekfom::esekf<state_ikfom, 12, input_ikfom> kf_tmp = kf;
+        kf_tmp.change_x(imu_prop_state);
+        kf_tmp.predict(dt, Q_pred, in);
+        imu_prop_state = kf_tmp.get_x();
+        imu_prop_last_time = t_cur;
+
+        nav_msgs::msg::Odometry odom_high;
+        odom_high.header.stamp = msg->header.stamp;
+        odom_high.header.frame_id = "camera_init";
+        odom_high.child_frame_id = "body";
+        odom_high.pose.pose.position.x = imu_prop_state.pos(0);
+        odom_high.pose.pose.position.y = imu_prop_state.pos(1);
+        odom_high.pose.pose.position.z = imu_prop_state.pos(2);
+        odom_high.pose.pose.orientation.x = imu_prop_state.rot.coeffs()[0];
+        odom_high.pose.pose.orientation.y = imu_prop_state.rot.coeffs()[1];
+        odom_high.pose.pose.orientation.z = imu_prop_state.rot.coeffs()[2];
+        odom_high.pose.pose.orientation.w = imu_prop_state.rot.coeffs()[3];
+        odom_high.twist.twist.linear.x = imu_prop_state.vel(0);
+        odom_high.twist.twist.linear.y = imu_prop_state.vel(1);
+        odom_high.twist.twist.linear.z = imu_prop_state.vel(2);
+
+        if (pubOdomImuProp) {
+            pubOdomImuProp->publish(odom_high);
+        }
+    }
 }
 
 double lidar_mean_scantime = 0.0;
@@ -932,6 +989,7 @@ public:
         pubLaserCloudEffect_ = this->create_publisher<sensor_msgs::msg::PointCloud2>("/cloud_effected", 20);
         pubLaserCloudMap_ = this->create_publisher<sensor_msgs::msg::PointCloud2>("/Laser_map", 20);
         pubOdomAftMapped_ = this->create_publisher<nav_msgs::msg::Odometry>("/Odometry", 20);
+        pubOdomImuProp = this->create_publisher<nav_msgs::msg::Odometry>("/fastlio/imu_propagated_odometry", 100);
         pubPath_ = this->create_publisher<nav_msgs::msg::Path>("/path", 20);
         tf_broadcaster_ = std::make_unique<tf2_ros::TransformBroadcaster>(*this);
 
@@ -1057,6 +1115,13 @@ private:
             geoQuat.y = state_point.rot.coeffs()[1];
             geoQuat.z = state_point.rot.coeffs()[2];
             geoQuat.w = state_point.rot.coeffs()[3];
+
+            {
+                std::lock_guard<std::mutex> lock(imu_prop_mutex);
+                imu_prop_state = state_point;
+                imu_prop_last_time = lidar_end_time;
+                imu_prop_initialized = true;
+            }
 
             double t_update_end = omp_get_wtime();
 
