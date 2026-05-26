@@ -400,7 +400,7 @@ void imu_cbk(const sensor_msgs::msg::Imu::UniquePtr msg_in)
         V3D gyro(msg->angular_velocity.x, msg->angular_velocity.y, msg->angular_velocity.z);
         V3D acc(msg->linear_acceleration.x, msg->linear_acceleration.y, msg->linear_acceleration.z);
         in.gyro = gyro;
-        in.acc = acc * G_m_s2 / p_imu->mean_acc.norm();
+        in.acc = acc * p_imu->get_acc_norm_scale();
 
         auto Q_pred = process_noise_cov();
         Q_pred.block<3, 3>(0, 0).diagonal() = p_imu->cov_gyr;
