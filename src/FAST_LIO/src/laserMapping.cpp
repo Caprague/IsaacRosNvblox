@@ -142,6 +142,10 @@ double imu_prop_last_time = -1.0;
 state_ikfom imu_prop_state;
 rclcpp::Publisher<nav_msgs::msg::Odometry>::SharedPtr pubOdomImuProp;
 
+std::mutex latest_imu_mutex;
+sensor_msgs::msg::Imu::SharedPtr latest_imu_msg;
+bool latest_imu_available = false;
+
 nav_msgs::msg::Path path;
 nav_msgs::msg::Odometry odomAftMapped;
 geometry_msgs::msg::Quaternion geoQuat;
@@ -382,56 +386,11 @@ void imu_cbk(const sensor_msgs::msg::Imu::UniquePtr msg_in)
     mtx_buffer.unlock();
     sig_buffer.notify_all();
 
-    // Publish high-frequency IMU-propagated odometry (predict-only between LiDAR updates)
+    // Cache latest imu only; high-frequency propagation is handled in timer callback.
     {
-        std::lock_guard<std::mutex> lock(imu_prop_mutex);
-        if (!imu_prop_initialized) {
-            return;
-        }
-
-        const double t_cur = get_time_sec(msg->header.stamp);
-        double dt = t_cur - imu_prop_last_time;
-        if (dt <= 0.0 || dt > 0.05) {
-            imu_prop_last_time = t_cur;
-            return;
-        }
-
-        input_ikfom in;
-        V3D gyro(msg->angular_velocity.x, msg->angular_velocity.y, msg->angular_velocity.z);
-        V3D acc(msg->linear_acceleration.x, msg->linear_acceleration.y, msg->linear_acceleration.z);
-        in.gyro = gyro;
-        in.acc = acc * p_imu->get_acc_norm_scale();
-
-        auto Q_pred = process_noise_cov();
-        Q_pred.block<3, 3>(0, 0).diagonal() = p_imu->cov_gyr;
-        Q_pred.block<3, 3>(3, 3).diagonal() = p_imu->cov_acc;
-        Q_pred.block<3, 3>(6, 6).diagonal() = p_imu->cov_bias_gyr;
-        Q_pred.block<3, 3>(9, 9).diagonal() = p_imu->cov_bias_acc;
-
-        esekfom::esekf<state_ikfom, 12, input_ikfom> kf_tmp = kf;
-        kf_tmp.change_x(imu_prop_state);
-        kf_tmp.predict(dt, Q_pred, in);
-        imu_prop_state = kf_tmp.get_x();
-        imu_prop_last_time = t_cur;
-
-        nav_msgs::msg::Odometry odom_high;
-        odom_high.header.stamp = msg->header.stamp;
-        odom_high.header.frame_id = "camera_init";
-        odom_high.child_frame_id = "body";
-        odom_high.pose.pose.position.x = imu_prop_state.pos(0);
-        odom_high.pose.pose.position.y = imu_prop_state.pos(1);
-        odom_high.pose.pose.position.z = imu_prop_state.pos(2);
-        odom_high.pose.pose.orientation.x = imu_prop_state.rot.coeffs()[0];
-        odom_high.pose.pose.orientation.y = imu_prop_state.rot.coeffs()[1];
-        odom_high.pose.pose.orientation.z = imu_prop_state.rot.coeffs()[2];
-        odom_high.pose.pose.orientation.w = imu_prop_state.rot.coeffs()[3];
-        odom_high.twist.twist.linear.x = imu_prop_state.vel(0);
-        odom_high.twist.twist.linear.y = imu_prop_state.vel(1);
-        odom_high.twist.twist.linear.z = imu_prop_state.vel(2);
-
-        if (pubOdomImuProp) {
-            pubOdomImuProp->publish(odom_high);
-        }
+        std::lock_guard<std::mutex> lock(latest_imu_mutex);
+        latest_imu_msg = msg;
+        latest_imu_available = true;
     }
 }
 
@@ -1000,6 +959,10 @@ public:
         auto map_period_ms = std::chrono::milliseconds(static_cast<int64_t>(1000.0));
         map_pub_timer_ = rclcpp::create_timer(this, this->get_clock(), map_period_ms, std::bind(&LaserMappingNode::map_publish_callback, this));
 
+        auto imu_prop_period_ms = std::chrono::milliseconds(10);  // 100 Hz
+        imu_prop_timer_ = rclcpp::create_timer(this, this->get_clock(), imu_prop_period_ms,
+            std::bind(&LaserMappingNode::imu_propagation_publish_callback, this));
+
         map_save_srv_ = this->create_service<std_srvs::srv::Trigger>("map_save", std::bind(&LaserMappingNode::map_save_callback, this, std::placeholders::_1, std::placeholders::_2));
 
         RCLCPP_INFO(this->get_logger(), "Node init finished.");
@@ -1177,6 +1140,69 @@ private:
         if (map_pub_en) publish_map(pubLaserCloudMap_);
     }
 
+    void imu_propagation_publish_callback()
+    {
+        sensor_msgs::msg::Imu::SharedPtr imu_msg;
+        {
+            std::lock_guard<std::mutex> lock(latest_imu_mutex);
+            if (!latest_imu_available || !latest_imu_msg) {
+                return;
+            }
+            imu_msg = latest_imu_msg;
+        }
+
+        std::lock_guard<std::mutex> lock(imu_prop_mutex);
+        if (!imu_prop_initialized) {
+            return;
+        }
+
+        const double t_cur = get_time_sec(imu_msg->header.stamp);
+        double dt = t_cur - imu_prop_last_time;
+        if (dt <= 0.0) {
+            return;
+        }
+        if (dt > 0.1) {
+            dt = 0.1;
+        }
+
+        input_ikfom in;
+        V3D gyro(imu_msg->angular_velocity.x, imu_msg->angular_velocity.y, imu_msg->angular_velocity.z);
+        V3D acc(imu_msg->linear_acceleration.x, imu_msg->linear_acceleration.y, imu_msg->linear_acceleration.z);
+        in.gyro = gyro;
+        in.acc = acc * p_imu->get_acc_norm_scale();
+
+        auto Q_pred = process_noise_cov();
+        Q_pred.block<3, 3>(0, 0).diagonal() = p_imu->cov_gyr;
+        Q_pred.block<3, 3>(3, 3).diagonal() = p_imu->cov_acc;
+        Q_pred.block<3, 3>(6, 6).diagonal() = p_imu->cov_bias_gyr;
+        Q_pred.block<3, 3>(9, 9).diagonal() = p_imu->cov_bias_acc;
+
+        esekfom::esekf<state_ikfom, 12, input_ikfom> kf_tmp = kf;
+        kf_tmp.change_x(imu_prop_state);
+        kf_tmp.predict(dt, Q_pred, in);
+        imu_prop_state = kf_tmp.get_x();
+        imu_prop_last_time = t_cur;
+
+        nav_msgs::msg::Odometry odom_high;
+        odom_high.header.stamp = imu_msg->header.stamp;
+        odom_high.header.frame_id = "camera_init";
+        odom_high.child_frame_id = "body";
+        odom_high.pose.pose.position.x = imu_prop_state.pos(0);
+        odom_high.pose.pose.position.y = imu_prop_state.pos(1);
+        odom_high.pose.pose.position.z = imu_prop_state.pos(2);
+        odom_high.pose.pose.orientation.x = imu_prop_state.rot.coeffs()[0];
+        odom_high.pose.pose.orientation.y = imu_prop_state.rot.coeffs()[1];
+        odom_high.pose.pose.orientation.z = imu_prop_state.rot.coeffs()[2];
+        odom_high.pose.pose.orientation.w = imu_prop_state.rot.coeffs()[3];
+        odom_high.twist.twist.linear.x = imu_prop_state.vel(0);
+        odom_high.twist.twist.linear.y = imu_prop_state.vel(1);
+        odom_high.twist.twist.linear.z = imu_prop_state.vel(2);
+
+        if (pubOdomImuProp) {
+            pubOdomImuProp->publish(odom_high);
+        }
+    }
+
     void map_save_callback(std_srvs::srv::Trigger::Request::ConstSharedPtr req, std_srvs::srv::Trigger::Response::SharedPtr res)
     {
         RCLCPP_INFO(this->get_logger(), "Saving map to %s...", map_file_path.c_str());
@@ -1207,6 +1233,7 @@ private:
     std::unique_ptr<tf2_ros::TransformBroadcaster> tf_broadcaster_;
     rclcpp::TimerBase::SharedPtr timer_;
     rclcpp::TimerBase::SharedPtr map_pub_timer_;
+    rclcpp::TimerBase::SharedPtr imu_prop_timer_;
     rclcpp::Service<std_srvs::srv::Trigger>::SharedPtr map_save_srv_;
 
     bool effect_pub_en = false, map_pub_en = false;
