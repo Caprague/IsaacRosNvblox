@@ -56,7 +56,7 @@
     locomotion_height_scan_expected_initial_height: 0.342
     # Sliding window size for filtering the online drift compensation value.
     # A moving average of the last N drift samples is applied. Set to 1 to disable filtering.
-    locomotion_height_scan_drift_filter_window: 5
+    locomotion_height_scan_drift_filter_window: 2
 
     # --- Maintenance thread rates ---
     # Thread wake-up rate = max(decay_tsdf, decay_dynamic_occupancy, clear_map_outside_radius)
