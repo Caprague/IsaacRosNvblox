@@ -1,0 +1,29 @@
+# Mid360 to nvblox Bridge Configuration
+/**:
+  ros__parameters:
+    # Virtual LiDAR model parameters (must match nvblox configuration)
+    virtual_lidar_width: 1800        # Horizontal angular resolution
+    virtual_lidar_height: 32         # Number of vertical beams
+    
+    # Range limits (meters)
+    min_range_m: 0.5                 # Minimum valid range
+    max_range_m: 30.0                # Maximum valid range
+    
+    # Vertical field of view (degrees)
+    # Mid360: -7° to +52° = 59° total
+    min_elevation_deg: -7.0          # Below horizontal
+    max_elevation_deg: 52.0          # Above horizontal
+    
+    # Processing options
+    enable_hole_filling: true        # Fill missing grid cells via interpolation
+    max_hole_fill_iterations: 2      # Number of interpolation passes
+    
+    # Aggregation method for multiple points in same cell
+    # Options: "mean", "min", "max", "median"
+    aggregation_method: "mean"
+    
+    # Output options
+    output_intensity: false          # Include intensity field (if available)
+    
+    # Outlier removal
+    outlier_removal_radius_ratio: 0.1  # Remove points with depth jump > ratio*range

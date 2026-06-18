@@ -1,0 +1,25 @@
+# GPU加速版本配置
+/**:
+  ros__parameters:
+    # 继承基础配置
+    virtual_lidar_width: 1800
+    virtual_lidar_height: 32
+    min_range_m: 0.5
+    max_range_m: 30.0
+    min_elevation_deg: -7.0
+    max_elevation_deg: 52.0
+    
+    # GPU特定参数
+    use_gpu: true                    # 启用GPU加速
+    gpu_min_points: 10000            # 点数阈值：超过此值才用GPU
+    enable_perf_monitoring: true     # 启用性能监控
+    
+    # 聚合方法（GPU优化）
+    aggregation_method: "mean"       # mean/min/max
+    
+    # 空洞填充
+    enable_hole_filling: true
+    max_hole_fill_iterations: 2
+    
+    # 输出选项
+    output_intensity: false
