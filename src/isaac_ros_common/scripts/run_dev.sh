@@ -281,6 +281,8 @@ if [[ $VERBOSE -eq 1 ]]; then
     set -x
 fi
 
+BASE_NAME="isaac_ros_dev-aarch64"
+
 # docker run -it --rm \
 docker run -it \
     --privileged \
