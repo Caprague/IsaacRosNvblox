@@ -71,12 +71,12 @@ def generate_launch_description() -> LaunchDescription:
         description='Launch Realsense drivers')
     args.add_arg(
         'use_foxglove_whitelist',
-        True,
+        False,
         description='Disable visualization of bandwidth-heavy topics',
         cli=True)
     args.add_arg(
         'udp_print_stats',
-        'false',
+        'True',
         description='UDP senders: print per-frame size and send rate (true/false)',
         cli=True)
     actions = args.get_launch_actions()
