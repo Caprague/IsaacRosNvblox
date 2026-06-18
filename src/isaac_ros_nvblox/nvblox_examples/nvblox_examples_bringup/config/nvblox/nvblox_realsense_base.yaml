@@ -91,15 +91,15 @@
     use_depth: true
     # lidar settings
     use_lidar: true
-    lidar_width: 1800
-    lidar_height: 32
+    lidar_width: 900
+    lidar_height: 16
     lidar_min_valid_range_m: 0.5
-    lidar_max_valid_range_m: 10.0
+    lidar_max_valid_range_m: 5.0
     use_non_equal_vertical_fov_lidar_params: true
     min_angle_below_zero_elevation_rad: 0.122173  # 7° * π/180
     max_angle_above_zero_elevation_rad: 0.907571  # 52° * π/180
     # Input queues
-    maximum_input_queue_length: 10
+    maximum_input_queue_length: 5
     # Map clearing settings
     map_clearing_radius_m: 4.0 # no map clearing if < 0.0
     map_clearing_frame_id: "base_link"

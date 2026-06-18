@@ -2,10 +2,10 @@
 /**:
   ros__parameters:
     # 继承基础配置
-    virtual_lidar_width: 1800
-    virtual_lidar_height: 32
+    virtual_lidar_width: 900
+    virtual_lidar_height: 16
     min_range_m: 0.5
-    max_range_m: 10.0
+    max_range_m: 5.0
     min_elevation_deg: -7.0
     max_elevation_deg: 52.0
     
@@ -13,7 +13,7 @@
     aggregation_method: "mean"       # mean/min/max
     
     # 空洞填充
-    enable_hole_filling: true
+    enable_hole_filling: false
     max_hole_fill_iterations: 0
     
     # 输出选项
