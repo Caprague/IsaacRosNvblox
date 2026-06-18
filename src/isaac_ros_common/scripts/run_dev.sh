@@ -281,6 +281,7 @@ if [[ $VERBOSE -eq 1 ]]; then
     set -x
 fi
 
+# 用已有镜像恢复容器时，修改如下镜像名为本地镜像
 BASE_NAME="isaac_ros_dev-aarch64"
 
 # docker run -it --rm \
