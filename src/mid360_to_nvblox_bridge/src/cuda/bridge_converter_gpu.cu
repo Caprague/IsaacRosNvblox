@@ -183,12 +183,20 @@ void BridgeConverterGPU::convertPointcloud(
   const int block_size = 256;
   const int grid_dim = (num_points + block_size - 1) / block_size;
 
-  // Launch points-to-grid kernel
-  pointsToGridKernel<<<grid_dim, block_size, 0, impl_->stream>>>(
-      impl_->points_x_buffer.data(), impl_->points_y_buffer.data(),
-      impl_->points_z_buffer.data(),
-      num_points, impl_->config, impl_->grid_buffer.data(),
-      impl_->valid_count_buffer.data());
+  // Dispatch to appropriate kernel based on aggregation method
+  if (aggregation == AggregationMethod::MEAN) {
+    pointsToGridKernel<<<grid_dim, block_size, 0, impl_->stream>>>(
+        impl_->points_x_buffer.data(), impl_->points_y_buffer.data(),
+        impl_->points_z_buffer.data(),
+        num_points, impl_->config, impl_->grid_buffer.data(),
+        impl_->valid_count_buffer.data());
+  } else {
+    pointsToGridMinMaxKernel<<<grid_dim, block_size, 0, impl_->stream>>>(
+        impl_->points_x_buffer.data(), impl_->points_y_buffer.data(),
+        impl_->points_z_buffer.data(),
+        num_points, impl_->config, impl_->grid_buffer.data(),
+        aggregation);
+  }
 
   // Launch aggregation kernel
   const int agg_grid_dim = (static_cast<int>(impl_->grid_size) + block_size - 1) / block_size;

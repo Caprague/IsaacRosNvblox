@@ -432,7 +432,7 @@ void NvbloxNode::subscribeToTopics()
     // Subscribe to pointclouds.
     pointcloud_sub_ = create_subscription<sensor_msgs::msg::PointCloud2>(
       // "pointcloud", input_qos,
-      "/utlidar/cloud", input_qos,
+      "/lidar/pointcloud_structured", input_qos,
       std::bind(&NvbloxNode::pointcloudCallback, this, std::placeholders::_1));
   }
 
@@ -988,6 +988,10 @@ void NvbloxNode::integrationThreadFunc()
       std::unique_lock<std::shared_mutex> lock(tsdf_rw_mutex_);
       if (params_.use_lidar) {
         processPointcloudQueue();
+        RCLCPP_INFO_THROTTLE(get_logger(), *get_clock(), 1000,
+          "[LidarFusion] queue=%zu, last_integrated=%.0f.%09ld",
+          pointcloud_queue_->size(),
+          integrate_lidar_last_time_.seconds(), integrate_lidar_last_time_.nanoseconds());
       }
     }
   }

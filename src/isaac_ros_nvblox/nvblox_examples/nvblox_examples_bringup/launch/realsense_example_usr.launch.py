@@ -151,6 +151,16 @@ def generate_launch_description() -> LaunchDescription:
             NVBLOX_CONTAINER_NAME, condition=UnlessCondition(args.attach_to_container),
             log_level=args.log_level))
 
+    # Static TF: camera_link → base_link
+    actions.append(
+        Node(
+            package='tf2_ros',
+            executable='static_transform_publisher',
+            arguments=['-0.28', '0', '-0.11',
+                       '0', '0', '0', '1',
+                       'camera_link', 'base_link']
+        ))
+
     # Height Scan + Safety Guardian UDP Senders
     actions.append(
         lu.include(

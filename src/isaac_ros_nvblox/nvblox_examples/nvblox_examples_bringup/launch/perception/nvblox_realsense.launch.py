@@ -45,7 +45,6 @@ def add_nvblox(args: lu.ArgumentContainer) -> List[Action]:
     mode = NvbloxMode[args.mode]
     camera = NvbloxCamera[args.camera]
     num_cameras = int(args.num_cameras)
-    use_lidar = lu.is_true(args.lidar)
 
     if camera == NvbloxCamera.realsense:
         assert args.num_cameras == 1, 'NvbloxCamera.realsense shall only be set for num_cameras==1'
@@ -79,7 +78,7 @@ def add_nvblox(args: lu.ArgumentContainer) -> List[Action]:
     if camera is NvbloxCamera.realsense:
         remappings = get_realsense_remappings(mode, num_cameras)
         camera_config = realsense_config
-        assert not use_lidar, 'Can not run lidar for realsense example.'
+        # assert not use_lidar, 'Can not run lidar for realsense example.'
     elif camera is NvbloxCamera.multi_realsense:
         remappings = get_realsense_remappings(mode, num_cameras)
         camera_config = multi_realsense_config
@@ -92,7 +91,6 @@ def add_nvblox(args: lu.ArgumentContainer) -> List[Action]:
     parameters.append(mode_config)
     parameters.append(camera_config)
     parameters.append({'num_cameras': num_cameras})
-    parameters.append({'use_lidar': use_lidar})
 
     # Add the nvblox node.
     nvblox_node = ComposableNode(
@@ -120,7 +118,6 @@ def generate_launch_description() -> LaunchDescription:
     args.add_arg('mode')
     args.add_arg('camera', 1)
     args.add_arg('num_cameras', 1)
-    args.add_arg('lidar', 'True')
     args.add_arg('container_name', NVBLOX_CONTAINER_NAME)
     args.add_arg('run_standalone', 'False')
 

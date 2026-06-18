@@ -17,7 +17,7 @@
     # --- Integration thread rates (event-driven, these control per-queue processing frequency) ---
     integrate_depth_rate_hz: 30.0
     integrate_color_rate_hz: 5.0
-    integrate_lidar_rate_hz: 15.0
+    integrate_lidar_rate_hz: 5.0
 
     # --- Height scan thread rate (dedicated 50Hz thread) ---
     publish_locomotion_height_scan_rate_hz: 25.0
@@ -90,12 +90,14 @@
     # depth settings
     use_depth: true
     # lidar settings
-    use_lidar: false
-    lidar_width: 1425
-    lidar_height: 1
-    lidar_min_valid_range_m: 0.1
+    use_lidar: true
+    lidar_width: 1800
+    lidar_height: 32
+    lidar_min_valid_range_m: 0.5
     lidar_max_valid_range_m: 10.0
-    use_non_equal_vertical_fov_lidar_params: false
+    use_non_equal_vertical_fov_lidar_params: true
+    min_angle_below_zero_elevation_rad: 0.122173  # 7° * π/180
+    max_angle_above_zero_elevation_rad: 0.907571  # 52° * π/180
     # Input queues
     maximum_input_queue_length: 10
     # Map clearing settings
