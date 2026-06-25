@@ -34,8 +34,8 @@ def add_vslam(args: lu.ArgumentContainer) -> List[Action]:
     realsense_remappings = [
         ('visual_slam/camera_info_0', '/camera0/infra1/camera_info'),
         ('visual_slam/camera_info_1', '/camera0/infra2/camera_info'),
-        ('visual_slam/image_0', '/camera0/realsense_splitter_node/output/infra_1'),
-        ('visual_slam/image_1', '/camera0/realsense_splitter_node/output/infra_2'),
+        ('visual_slam/image_0', '/camera0/infra1/image_rect_raw'),
+        ('visual_slam/image_1', '/camera0/infra2/image_rect_raw'),
         ('visual_slam/imu', 'camera0/imu'),
     ]
 

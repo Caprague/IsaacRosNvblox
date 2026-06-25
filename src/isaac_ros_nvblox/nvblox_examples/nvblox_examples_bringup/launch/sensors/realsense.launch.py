@@ -23,17 +23,12 @@ import isaac_ros_launch_utils as lu
 from nvblox_ros_python_utils.nvblox_constants import NVBLOX_CONTAINER_NAME
 
 
-EMITTER_FLASHING_CONFIG_FILE_PATH = lu.get_path('nvblox_examples_bringup', 'config/sensors/realsense_emitter_flashing.yaml')
 EMITTER_ON_CONFIG_FILE_PATH = lu.get_path('nvblox_examples_bringup', 'config/sensors/realsense_emitter_on.yaml')
+EMITTER_OFF_CONFIG_FILE_PATH = lu.get_path('nvblox_examples_bringup', 'config/sensors/realsense_emitter_off.yaml')
 
-# By default our behaviour is:
-# - Run the splitter on camera0,
-# - Don't run the splitter on the remaining cameras.
-# NOTE(alexmillane, 16.08.2024): At the moment this is the *only* behaviour we support.
+
 def get_default_run_splitter_list(num_cameras: int) -> List[bool]:
-    run_splitter_list = [False] * num_cameras
-    run_splitter_list[0] = True
-    return run_splitter_list
+    return [False] * num_cameras
 
 
 def get_camera_node(camera_name: str, config_file_path: str, serial_number: Optional[int] = None) -> ComposableNode:
@@ -96,8 +91,8 @@ def add_cameras(args: lu.ArgumentContainer) -> List[Action]:
         nodes = []
         camera_name = f'camera{idx}'
         # Config file
-        if run_splitter:
-            config_file_path = EMITTER_FLASHING_CONFIG_FILE_PATH
+        if idx == 0:
+            config_file_path = EMITTER_OFF_CONFIG_FILE_PATH
         else:
             config_file_path = EMITTER_ON_CONFIG_FILE_PATH
         # Realsense

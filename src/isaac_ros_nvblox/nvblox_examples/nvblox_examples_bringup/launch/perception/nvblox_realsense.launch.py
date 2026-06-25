@@ -26,28 +26,15 @@ from nvblox_ros_python_utils.nvblox_constants import NVBLOX_CONTAINER_NAME
 
 
 def get_realsense_remappings(mode: NvbloxMode, num_cameras: int = 1) -> List[Tuple[str, str]]:
-    # NOTE(xinjieyao, 04.09.2024): Current in this function we only support:
-    # - On/off emitter flashing + realsense_splitter on camera_0 (front camera).
-    # - (Optional) people segmentation on all cameras.
-    # - (Optional) people detection on all cameras.
+    # This user launch variant does not use realsense_splitter. All cameras feed nvblox from
+    # the RealSense driver depth/color image topics directly.
 
     remappings = []
     for i in range(0, num_cameras):
-        if i == 0:
-            # Only cam0 (i == 0) runs splitter.
-            remappings.append(
-                (f'camera_{i}/depth/image', f'/camera{i}/realsense_splitter_node/output/depth'))
-            remappings.append((f'camera_{i}/depth/camera_info', f'/camera{i}/depth/camera_info'))
-
-            remappings.append((f'camera_{i}/color/image', f'/camera{i}/color/image_raw'))
-            remappings.append((f'camera_{i}/color/camera_info', f'/camera{i}/color/camera_info'))
-
-        else:
-            remappings.append((f'camera_{i}/depth/image', f'/camera{i}/depth/image_rect_raw'))
-            remappings.append((f'camera_{i}/depth/camera_info', f'/camera{i}/depth/camera_info'))
-
-            remappings.append((f'camera_{i}/color/image', f'/camera{i}/color/image_raw'))
-            remappings.append((f'camera_{i}/color/camera_info', f'/camera{i}/color/camera_info'))
+        remappings.append((f'camera_{i}/depth/image', f'/camera{i}/depth/image_rect_raw'))
+        remappings.append((f'camera_{i}/depth/camera_info', f'/camera{i}/depth/camera_info'))
+        remappings.append((f'camera_{i}/color/image', f'/camera{i}/color/image_raw'))
+        remappings.append((f'camera_{i}/color/camera_info', f'/camera{i}/color/camera_info'))
 
     return remappings
 
