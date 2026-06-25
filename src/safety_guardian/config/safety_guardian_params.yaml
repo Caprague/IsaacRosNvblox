@@ -43,11 +43,11 @@ safety_guardian_node:
 
     # 里程计最低安全频率比例（0~1）
     # 实测频率低于 基准频率 * 此比例 时判定为 unsafe
-    odom_min_frequency_ratio: 0.8
+    odom_min_frequency_ratio: 0.5
 
     # 里程计频率异常连续确认次数
     # 连续 N 次检测到频率异常才触发 unsafe，避免单次抖动误判
-    odom_frequency_violation_count: 5
+    odom_frequency_violation_count: 10
 
     # ========== 高程频率安全监控参数 ==========
 

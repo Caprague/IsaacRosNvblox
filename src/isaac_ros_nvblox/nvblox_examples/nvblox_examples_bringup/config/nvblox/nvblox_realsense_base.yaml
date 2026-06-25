@@ -3,7 +3,7 @@
     # cuda stream setting
     cuda_stream_type: 1  # 0: cuda default stream, 1: blocking async stream, 2: non blocking async stream, 3: per-thread default stream.
     # miscellaneous
-    voxel_size: 0.05
+    voxel_size: 0.1
     num_cameras: 1
     use_tf_transforms: true
     mapping_type: "static_tsdf"  # ["static_tsdf", "static_occupancy"]
@@ -17,7 +17,7 @@
     # --- Integration thread rates (event-driven, these control per-queue processing frequency) ---
     integrate_depth_rate_hz: 30.0
     integrate_color_rate_hz: 5.0
-    integrate_lidar_rate_hz: 5.0
+    integrate_lidar_rate_hz: 1.0
 
     # --- Height scan thread rate (dedicated 50Hz thread) ---
     publish_locomotion_height_scan_rate_hz: 25.0
@@ -30,13 +30,13 @@
     terrain_cache_range_x: 4.0
     terrain_cache_range_y: 4.0
     terrain_cache_resolution: 0.1
-    terrain_cache_update_rate_hz: 10.0
+    terrain_cache_update_rate_hz: 5.0
     terrain_cache_max_casting_depth: 2.0
     terrain_cache_z_offset: 0.5
 
     # --- Ground plane initialization params ---
     ground_plane_init_delay: 10
-    ground_plane_height_offset: -0.135
+    ground_plane_height_offset: -0.105
 
     # --- Locomotion height scan params (high-freq local query, default 1.6x1.0m @ 0.1m) ---
     locomotion_height_scan_range_x: 1.6
@@ -56,7 +56,7 @@
     locomotion_height_scan_expected_initial_height: 0.342
     # Sliding window size for filtering the online drift compensation value.
     # A moving average of the last N drift samples is applied. Set to 1 to disable filtering.
-    locomotion_height_scan_drift_filter_window: 2
+    locomotion_height_scan_drift_filter_window: 3
 
     # --- Maintenance thread rates ---
     # Thread wake-up rate = max(decay_tsdf, decay_dynamic_occupancy, clear_map_outside_radius)
@@ -69,11 +69,11 @@
     # Thread wake-up rate = max(update_esdf, publish_layer, publish_debug_vis)
     # Each operation executes at its own rate via shouldProcess gating
     update_esdf_rate_hz: -1.0   # Disable
-    publish_layer_rate_hz: 5.0
-    publish_debug_vis_rate_hz: 5.0
+    publish_layer_rate_hz: 1.0
+    publish_debug_vis_rate_hz: 1.0
 
     # --- Other processing rates ---
-    update_mesh_rate_hz: 2.0
+    update_mesh_rate_hz: 1.0
 
     # printing statistics on console
     print_rates_to_console: true
