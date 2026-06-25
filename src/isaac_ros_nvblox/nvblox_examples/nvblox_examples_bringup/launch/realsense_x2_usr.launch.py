@@ -197,20 +197,20 @@ def generate_launch_description() -> LaunchDescription:
             NVBLOX_CONTAINER_NAME, condition=UnlessCondition(args.attach_to_container),
             log_level=args.log_level))
 
-    # # Height Scan + Safety Guardian UDP Senders
-    # actions.append(
-    #     lu.include(
-    #         'height_scan_bridge',
-    #         'launch/height_scan_sender.launch.py',
-    #         launch_arguments={
-    #             'height_scan_target_ip': '192.168.123.18',
-    #             'height_scan_port': '9870',
-    #             'height_scan_print_stats': args.udp_print_stats,
-    #             'safety_guardian_target_ip': '192.168.123.18',
-    #             'safety_guardian_port': '9871',
-    #             'safety_guardian_print_stats': args.udp_print_stats,
-    #         },
-    #         delay=20.0
-    #     ))
+    # Height Scan + Safety Guardian UDP Senders
+    actions.append(
+        lu.include(
+            'height_scan_bridge',
+            'launch/height_scan_sender.launch.py',
+            launch_arguments={
+                'height_scan_target_ip': '192.168.123.18',
+                'height_scan_port': '9870',
+                'height_scan_print_stats': args.udp_print_stats,
+                'safety_guardian_target_ip': '192.168.123.18',
+                'safety_guardian_port': '9871',
+                'safety_guardian_print_stats': args.udp_print_stats,
+            },
+            delay=20.0
+        ))
 
     return LaunchDescription(actions)
