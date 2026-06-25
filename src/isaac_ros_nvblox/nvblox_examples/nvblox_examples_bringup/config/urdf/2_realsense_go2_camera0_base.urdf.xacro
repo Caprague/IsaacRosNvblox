@@ -1,0 +1,51 @@
+<?xml version="1.0"?>
+<!--
+# SPDX-FileCopyrightText: NVIDIA CORPORATION & AFFILIATES
+# Copyright (c) 2022 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+# http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+#
+# SPDX-License-Identifier: Apache-2.0
+-->
+<robot name="2_realsense_go2_camera0_base">
+
+  <!-- camera0_link -> sensor_head_link -> base_link      -->
+  <!--                                  -> camera1_link   -->
+
+  <link name="camera0_link"/>
+
+  <joint name="camera0" type="fixed">
+    <parent link="camera0_link"/>
+    <child link="sensor_head_link"/>
+    <origin xyz="0.0261373 -0.0174472 -0.0312355" rpy="0 0 0"/>
+  </joint>
+
+  <link name="sensor_head_link"/>
+
+  <joint name="sensor_head_to_base" type="fixed">
+    <parent link="sensor_head_link"/>
+    <child link="base_link"/>
+    <origin xyz="-0.3284235 0 -0.0942744" rpy="0 0 0"/>
+  </joint>
+
+  <link name="base_link"/>
+
+  <joint name="camera1" type="fixed">
+    <parent link="sensor_head_link"/>
+    <child link="camera1_link"/>
+    <origin xyz="0.0012610 0.0174472 0.087530" rpy="0 0.785 0"/>
+  </joint>
+
+  <link name="camera1_link"/>
+
+</robot>

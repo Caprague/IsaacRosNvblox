@@ -281,7 +281,7 @@ private:
     if (this->alignment_quaternion_set_)
     {
       this->publish_horizontal_transform(this->alignment_quaternion_);
-      this->publish_lidar_transform();
+      // this->publish_lidar_transform();
     }
   }
   

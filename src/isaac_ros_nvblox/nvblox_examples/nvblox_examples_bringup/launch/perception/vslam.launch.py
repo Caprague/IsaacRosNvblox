@@ -45,7 +45,8 @@ def add_vslam(args: lu.ArgumentContainer) -> List[Action]:
     if camera is NvbloxCamera.realsense:
         base_frame = 'camera0_link'
     else:
-        base_frame = 'base_link'
+        # base_frame = 'base_link'
+        base_frame = 'camera0_link'
 
     actions.append(lu.log_info(f'Starting cuVSLAM with base_frame: {base_frame}'))
 

@@ -119,7 +119,7 @@ def add_cameras(args: lu.ArgumentContainer) -> List[Action]:
         # Adding delay for cameras after the first camera bringup (including splitter) as temp fix
         actions.append(
             TimerAction(
-                period=idx * 10.0, actions=[lu.load_composable_nodes(args.container_name, nodes)]))
+                period=idx * 30.0, actions=[lu.load_composable_nodes(args.container_name, nodes)]))
         actions.append(log_message)
 
     return actions

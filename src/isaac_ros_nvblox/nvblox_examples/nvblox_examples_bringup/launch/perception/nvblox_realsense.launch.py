@@ -32,11 +32,22 @@ def get_realsense_remappings(mode: NvbloxMode, num_cameras: int = 1) -> List[Tup
     # - (Optional) people detection on all cameras.
 
     remappings = []
-    assert (num_cameras == 1) 
-    remappings.append((f'camera_0/depth/image', 'camera/depth/image_rect_raw'))
-    remappings.append((f'camera_0/depth/camera_info', 'camera/depth/camera_info'))
-    remappings.append((f'camera_0/color/image', 'camera/color/image_raw'))
-    remappings.append((f'camera_0/color/camera_info', 'camera/color/camera_info'))
+    for i in range(0, num_cameras):
+        if i == 0:
+            # Only cam0 (i == 0) runs splitter.
+            remappings.append(
+                (f'camera_{i}/depth/image', f'/camera{i}/realsense_splitter_node/output/depth'))
+            remappings.append((f'camera_{i}/depth/camera_info', f'/camera{i}/depth/camera_info'))
+
+            remappings.append((f'camera_{i}/color/image', f'/camera{i}/color/image_raw'))
+            remappings.append((f'camera_{i}/color/camera_info', f'/camera{i}/color/camera_info'))
+
+        else:
+            remappings.append((f'camera_{i}/depth/image', f'/camera{i}/depth/image_rect_raw'))
+            remappings.append((f'camera_{i}/depth/camera_info', f'/camera{i}/depth/camera_info'))
+
+            remappings.append((f'camera_{i}/color/image', f'/camera{i}/color/image_raw'))
+            remappings.append((f'camera_{i}/color/camera_info', f'/camera{i}/color/camera_info'))
 
     return remappings
 
@@ -45,6 +56,7 @@ def add_nvblox(args: lu.ArgumentContainer) -> List[Action]:
     mode = NvbloxMode[args.mode]
     camera = NvbloxCamera[args.camera]
     num_cameras = int(args.num_cameras)
+    use_lidar = lu.is_true(args.lidar)
 
     if camera == NvbloxCamera.realsense:
         assert args.num_cameras == 1, 'NvbloxCamera.realsense shall only be set for num_cameras==1'
@@ -118,6 +130,7 @@ def generate_launch_description() -> LaunchDescription:
     args.add_arg('mode')
     args.add_arg('camera', 1)
     args.add_arg('num_cameras', 1)
+    args.add_arg('lidar', 'False')
     args.add_arg('container_name', NVBLOX_CONTAINER_NAME)
     args.add_arg('run_standalone', 'False')
 

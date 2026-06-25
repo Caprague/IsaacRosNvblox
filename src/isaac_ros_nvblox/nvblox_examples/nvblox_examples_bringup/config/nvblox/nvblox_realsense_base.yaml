@@ -68,7 +68,7 @@
     # --- Output thread rates ---
     # Thread wake-up rate = max(update_esdf, publish_layer, publish_debug_vis)
     # Each operation executes at its own rate via shouldProcess gating
-    update_esdf_rate_hz: 2.0
+    update_esdf_rate_hz: -1.0   # Disable
     publish_layer_rate_hz: 5.0
     publish_debug_vis_rate_hz: 5.0
 
@@ -90,7 +90,7 @@
     # depth settings
     use_depth: true
     # lidar settings
-    use_lidar: true
+    use_lidar: false
     use_lidar_depth_image: true
     lidar_width: 900
     lidar_height: 16
