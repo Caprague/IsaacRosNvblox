@@ -91,10 +91,7 @@ def add_cameras(args: lu.ArgumentContainer) -> List[Action]:
         nodes = []
         camera_name = f'camera{idx}'
         # Config file
-        if idx == 0:
-            config_file_path = EMITTER_OFF_CONFIG_FILE_PATH
-        else:
-            config_file_path = EMITTER_ON_CONFIG_FILE_PATH
+        config_file_path = EMITTER_OFF_CONFIG_FILE_PATH
         # Realsense
         log_message = lu.log_info(f'Starting realsense with name: {camera_name}, running splitter: {run_splitter}')
         nodes.append(
