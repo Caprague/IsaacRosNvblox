@@ -233,6 +233,73 @@ void BridgeConverterGPU::convertPointcloud(
   out_z_buf.copyToHost(output_z.data(), impl_->grid_size);
 }
 
+void BridgeConverterGPU::convertToDepthImage(
+    const std::vector<float>& input_x,
+    const std::vector<float>& input_y,
+    const std::vector<float>& input_z,
+    std::vector<float>& output_depth_image,
+    AggregationMethod aggregation,
+    int hole_fill_iterations)
+{
+  const int num_points = static_cast<int>(input_x.size());
+
+  // Upload point data
+  impl_->points_x_buffer.copyFromHost(input_x.data(), num_points);
+  impl_->points_y_buffer.copyFromHost(input_y.data(), num_points);
+  impl_->points_z_buffer.copyFromHost(input_z.data(), num_points);
+
+  // Reset grid
+  impl_->grid_buffer.setZero();
+  impl_->valid_count_buffer.setZero();
+
+  // Kernel launch config
+  const int block_size = 256;
+  const int grid_dim = (num_points + block_size - 1) / block_size;
+
+  // Dispatch to appropriate kernel based on aggregation method
+  if (aggregation == AggregationMethod::MEAN) {
+    pointsToGridKernel<<<grid_dim, block_size, 0, impl_->stream>>>(
+        impl_->points_x_buffer.data(), impl_->points_y_buffer.data(),
+        impl_->points_z_buffer.data(),
+        num_points, impl_->config, impl_->grid_buffer.data(),
+        impl_->valid_count_buffer.data());
+  } else {
+    pointsToGridMinMaxKernel<<<grid_dim, block_size, 0, impl_->stream>>>(
+        impl_->points_x_buffer.data(), impl_->points_y_buffer.data(),
+        impl_->points_z_buffer.data(),
+        num_points, impl_->config, impl_->grid_buffer.data(),
+        aggregation);
+  }
+
+  // Launch aggregation kernel
+  const int agg_grid_dim = (static_cast<int>(impl_->grid_size) + block_size - 1) / block_size;
+  aggregateGridKernel<<<agg_grid_dim, block_size, 0, impl_->stream>>>(
+      impl_->grid_buffer.data(), static_cast<int>(impl_->grid_size), aggregation);
+
+  // Fill holes
+  impl_->fillHoles(hole_fill_iterations);
+
+  // Output depth image directly from grid (skip XYZ reconstruction)
+  dim3 img_block(16, 16);
+  dim3 img_grid(
+      (impl_->config.width + img_block.x - 1) / img_block.x,
+      (impl_->config.height + img_block.y - 1) / img_block.y);
+
+  output_depth_image.resize(impl_->grid_size);
+
+  DeviceBuffer<float> depth_img_buf(impl_->grid_size);
+
+  gridToDepthImageKernel<<<img_grid, img_block, 0, impl_->stream>>>(
+      impl_->grid_buffer.data(),
+      impl_->config.width, impl_->config.height,
+      depth_img_buf.data());
+
+  CUDA_CHECK(cudaStreamSynchronize(impl_->stream));
+
+  // Download results
+  depth_img_buf.copyToHost(output_depth_image.data(), impl_->grid_size);
+}
+
 int BridgeConverterGPU::getValidPointCount()
 {
   int count = 0;

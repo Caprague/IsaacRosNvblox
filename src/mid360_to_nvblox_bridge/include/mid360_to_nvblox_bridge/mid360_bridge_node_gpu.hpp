@@ -6,6 +6,7 @@
 
 #include <rclcpp/rclcpp.hpp>
 #include <sensor_msgs/msg/point_cloud2.hpp>
+#include <sensor_msgs/msg/image.hpp>
 #include <sensor_msgs/point_cloud2_iterator.hpp>
 
 #include "mid360_to_nvblox_bridge/cuda/bridge_converter_gpu.hpp"
@@ -40,16 +41,21 @@ private:
   void pointcloudCallback(const sensor_msgs::msg::PointCloud2::SharedPtr msg);
   sensor_msgs::msg::PointCloud2 convertToStructured(
     const sensor_msgs::msg::PointCloud2::SharedPtr & input_cloud);
+  sensor_msgs::msg::Image convertToDepthImage(
+    const sensor_msgs::msg::PointCloud2::SharedPtr & input_cloud);
 
   // ROS interfaces
   rclcpp::Subscription<sensor_msgs::msg::PointCloud2>::SharedPtr sub_pointcloud_;
   rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr pub_structured_;
+  rclcpp::Publisher<sensor_msgs::msg::Image>::SharedPtr pub_depth_image_;
 
   // Configuration
   VirtualLidarConfig config_;
   bool enable_hole_filling_;
   int max_hole_fill_iterations_;
   std::string aggregation_method_;
+  bool enable_structured_output_;
+  bool enable_depth_image_output_;
 
   // GPU converter
   std::unique_ptr<cuda::BridgeConverterGPU> gpu_converter_;

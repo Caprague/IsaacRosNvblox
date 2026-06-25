@@ -306,6 +306,7 @@ void NvbloxNode::subscribeToTopics()
   depth_image_queue_ = std::make_unique<std::list<ImageTypeVariant>>();
   color_image_queue_ = std::make_unique<std::list<ImageTypeVariant>>();
   pointcloud_queue_ = std::make_unique<std::list<sensor_msgs::msg::PointCloud2::ConstSharedPtr>>();
+  lidar_depth_image_queue_ = std::make_unique<std::list<sensor_msgs::msg::Image::ConstSharedPtr>>();
   esdf_service_queue_ = std::make_unique<std::list<EsdfServiceQueuedType>>();
   file_path_service_queue_ = std::make_unique<std::list<FilePathServiceQueuedType>>();
 
@@ -429,11 +430,17 @@ void NvbloxNode::subscribeToTopics()
   }
 
   if (params_.use_lidar) {
-    // Subscribe to pointclouds.
-    pointcloud_sub_ = create_subscription<sensor_msgs::msg::PointCloud2>(
-      // "pointcloud", input_qos,
-      "/lidar/pointcloud_structured", input_qos,
-      std::bind(&NvbloxNode::pointcloudCallback, this, std::placeholders::_1));
+    if (params_.use_lidar_depth_image) {
+      // Direct depth image path: skips pointcloud conversion in nvblox.
+      lidar_depth_image_sub_ = create_subscription<sensor_msgs::msg::Image>(
+        "/mid360_bridge/output/depth_image", input_qos,
+        std::bind(&NvbloxNode::lidarDepthImageCallback, this, std::placeholders::_1));
+    } else {
+      // Structured pointcloud path (original): converts to depth image inside nvblox.
+      pointcloud_sub_ = create_subscription<sensor_msgs::msg::PointCloud2>(
+        "/mid360_bridge/output/pointcloud_structured", input_qos,
+        std::bind(&NvbloxNode::pointcloudCallback, this, std::placeholders::_1));
+    }
   }
 
   // Subscribe to transforms.
@@ -656,6 +663,18 @@ void NvbloxNode::pointcloudCallback(
   pushOntoQueue(
     kPointcloudQueueName, pointcloud, pointcloud_queue_,
     &pointcloud_queue_mutex_);
+  integration_cv_.notify_all();
+}
+
+void NvbloxNode::lidarDepthImageCallback(
+  const sensor_msgs::msg::Image::ConstSharedPtr depth_image)
+{
+  timing::Timer tick_timer("ros/lidar_depth_image_callback");
+  timing::Rates::tick("ros/lidar_depth_image_callback");
+
+  pushOntoQueue(
+    kLidarDepthImageQueueName, depth_image, lidar_depth_image_queue_,
+    &lidar_depth_image_queue_mutex_);
   integration_cv_.notify_all();
 }
 
@@ -987,11 +1006,19 @@ void NvbloxNode::integrationThreadFunc()
     {
       std::unique_lock<std::shared_mutex> lock(tsdf_rw_mutex_);
       if (params_.use_lidar) {
-        processPointcloudQueue();
-        RCLCPP_INFO_THROTTLE(get_logger(), *get_clock(), 1000,
-          "[LidarFusion] queue=%zu, last_integrated=%.0f.%09ld",
-          pointcloud_queue_->size(),
-          integrate_lidar_last_time_.seconds(), integrate_lidar_last_time_.nanoseconds());
+        if (params_.use_lidar_depth_image) {
+          processLidarDepthImageQueue();
+          RCLCPP_INFO_THROTTLE(get_logger(), *get_clock(), 1000,
+            "[LidarFusion/DepthImg] queue=%zu, last_integrated=%.0f.%09ld",
+            lidar_depth_image_queue_->size(),
+            integrate_lidar_last_time_.seconds(), integrate_lidar_last_time_.nanoseconds());
+        } else {
+          processPointcloudQueue();
+          RCLCPP_INFO_THROTTLE(get_logger(), *get_clock(), 1000,
+            "[LidarFusion] queue=%zu, last_integrated=%.0f.%09ld",
+            pointcloud_queue_->size(),
+            integrate_lidar_last_time_.seconds(), integrate_lidar_last_time_.nanoseconds());
+        }
       }
     }
   }
@@ -1225,6 +1252,20 @@ void NvbloxNode::processPointcloudQueue()
     &pointcloud_queue_mutex_,    // NOLINT
     message_ready,             // NOLINT
     std::bind(&NvbloxNode::processLidarPointcloud, this, std::placeholders::_1));
+}
+
+void NvbloxNode::processLidarDepthImageQueue()
+{
+  using DepthImageMsg = sensor_msgs::msg::Image::ConstSharedPtr;
+  auto message_ready = [this](const DepthImageMsg & msg) {
+      return this->canTransform(msg->header.frame_id, msg->header.stamp);
+    };
+
+  processQueue<DepthImageMsg>(
+    lidar_depth_image_queue_,          // NOLINT
+    &lidar_depth_image_queue_mutex_,    // NOLINT
+    message_ready,                     // NOLINT
+    std::bind(&NvbloxNode::processLidarDepthImage, this, std::placeholders::_1));
 }
 
 void NvbloxNode::processServiceRequestTaskQueue()
@@ -1884,6 +1925,82 @@ bool NvbloxNode::processLidarPointcloud(
     nvblox::Time(now().nanoseconds()));
   newest_integrated_depth_time_ = std::max(pointcloud_timestamp, newest_integrated_depth_time_);
   integrate_lidar_last_time_ = pointcloud_timestamp;
+  lidar_integration_timer.Stop();
+
+  return true;
+}
+
+bool NvbloxNode::processLidarDepthImage(
+  const sensor_msgs::msg::Image::ConstSharedPtr & depth_img_ptr)
+{
+  timing::Timer ros_lidar_timer("ros/lidar");
+  timing::Rates::tick("ros/lidar");
+
+  const rclcpp::Time timestamp = depth_img_ptr->header.stamp;
+
+  if (!shouldProcess(timestamp, integrate_lidar_last_time_, params_.integrate_lidar_rate_hz)) {
+    return true;
+  }
+  if (timestamp <= shape_clearing_last_time_) {
+    return true;
+  }
+
+  const std::string target_frame = depth_img_ptr->header.frame_id;
+  Transform T_L_C;
+  if (!transformer_.lookupTransformToGlobalFrame(target_frame, timestamp, &T_L_C)) {
+    return false;
+  }
+
+  // Build Lidar intrinsics model (identical to processLidarPointcloud).
+  Lidar lidar =
+    (params_.use_non_equal_vertical_fov_lidar_params) ?
+    Lidar(
+    params_.lidar_width, params_.lidar_height, params_.lidar_min_valid_range_m,
+    params_.lidar_max_valid_range_m, params_.min_angle_below_zero_elevation_rad,
+    params_.max_angle_above_zero_elevation_rad) :
+    Lidar(
+    params_.lidar_width, params_.lidar_height, params_.lidar_min_valid_range_m,
+    params_.lidar_max_valid_range_m, params_.lidar_vertical_fov_rad);
+
+  // Validate depth image dimensions match Lidar model.
+  if (static_cast<int>(depth_img_ptr->height) != lidar.num_elevation_divisions() ||
+    static_cast<int>(depth_img_ptr->width) != lidar.num_azimuth_divisions())
+  {
+    RCLCPP_ERROR_ONCE(
+      get_logger(),
+      "Lidar depth image size (%ux%u) does not match Lidar model (%dx%d). "
+      "Check lidar_width/height parameters.",
+      depth_img_ptr->width, depth_img_ptr->height,
+      lidar.num_azimuth_divisions(), lidar.num_elevation_divisions());
+    return true;
+  }
+
+  // Reallocate GPU depth image buffer if needed.
+  if ((pointcloud_image_.rows() != lidar.num_elevation_divisions()) ||
+    (pointcloud_image_.cols() != lidar.num_azimuth_divisions()))
+  {
+    pointcloud_image_ = DepthImage(
+      lidar.num_elevation_divisions(), lidar.num_azimuth_divisions(), MemoryType::kDevice);
+  }
+
+  // Copy float32 depth image data from host to GPU.
+  cudaMemcpyAsync(
+    pointcloud_image_.dataPtr(),
+    depth_img_ptr->data.data(),
+    lidar.num_elevation_divisions() * lidar.num_azimuth_divisions() * sizeof(float),
+    cudaMemcpyHostToDevice,
+    *cuda_stream_);
+  cuda_stream_->synchronize();
+
+  // Integrate directly — no pointcloud conversion overhead.
+  timing::Timer lidar_integration_timer("ros/lidar/integration");
+  static_mapper_->integrateLidarDepth(pointcloud_image_, T_L_C, lidar);
+  timing::Delays::tick(
+    "ros/lidar_depth_image_integration",
+    nvblox::Time(timestamp.nanoseconds()),
+    nvblox::Time(now().nanoseconds()));
+  newest_integrated_depth_time_ = std::max(timestamp, newest_integrated_depth_time_);
+  integrate_lidar_last_time_ = timestamp;
   lidar_integration_timer.Stop();
 
   return true;

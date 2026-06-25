@@ -48,6 +48,14 @@ public:
       AggregationMethod aggregation = AggregationMethod::MEAN,
       int hole_fill_iterations = 2);
 
+  void convertToDepthImage(
+      const std::vector<float>& input_x,
+      const std::vector<float>& input_y,
+      const std::vector<float>& input_z,
+      std::vector<float>& output_depth_image,
+      AggregationMethod aggregation = AggregationMethod::MEAN,
+      int hole_fill_iterations = 2);
+
   int getValidPointCount();
 
 private:

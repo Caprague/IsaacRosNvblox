@@ -151,6 +151,11 @@ constexpr Param<float>::Description kMaxAngleAboveZeroElevationRadParamDesc{
   "The angle above zero elevation of the highest beam (specified as a positive number in radians). "
   "Default is for the *Hesai PandarXT32*."};
 
+constexpr Param<bool>::Description kUseLidarDepthImageParamDesc{
+  "use_lidar_depth_image", false,
+  "If true, subscribe to a pre-computed lidar depth image directly (skips pointcloud conversion). "
+  "Requires the bridge to publish on ~/output/depth_image."};
+
 // ======= VISUALIZATION PARAMS =======
 constexpr StringParam::Description kEsdfSliceBoundsVisualizationAttachmentFrameIdParamDesc{
   "esdf_slice_bounds_visualization_attachment_frame_id", "base_link",
@@ -436,6 +441,7 @@ public:
   Param<bool> use_depth{kUseDepthParamDesc};
   Param<bool> use_segmentation{kUseSegmentationParamDesc};
   Param<bool> use_lidar{kUseLidarParamDesc};
+  Param<bool> use_lidar_depth_image{kUseLidarDepthImageParamDesc};
   Param<bool> layer_visualization_undo_gamma_correction{
     kLayerVisualizationUndoGammaCorrectionParamDesc};
   Param<bool> output_pessimistic_distance_map{kOutputPessimisticDistanceMap};

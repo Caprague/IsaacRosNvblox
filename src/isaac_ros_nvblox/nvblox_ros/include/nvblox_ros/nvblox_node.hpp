@@ -142,6 +142,8 @@ public:
     const sensor_msgs::msg::CameraInfo::ConstSharedPtr & color_camera_info);
   void pointcloudCallback(
     const sensor_msgs::msg::PointCloud2::ConstSharedPtr pointcloud);
+  void lidarDepthImageCallback(
+    const sensor_msgs::msg::Image::ConstSharedPtr depth_image);
 
   void savePly(
     const std::shared_ptr<nvblox_msgs::srv::FilePath::Request> request,
@@ -176,6 +178,8 @@ public:
   virtual bool processColorImage(const ImageTypeVariant & color_mask_msg);
   virtual bool processLidarPointcloud(
     const sensor_msgs::msg::PointCloud2::ConstSharedPtr & pointcloud_ptr);
+  virtual bool processLidarDepthImage(
+    const sensor_msgs::msg::Image::ConstSharedPtr & depth_img_ptr);
 
   // Return true if the tf-tree contains a transform for the given frame_id and timestamp
   bool canTransform(const std::string & frame_id, const rclcpp::Time & timestamp);
@@ -194,6 +198,7 @@ protected:
   virtual void processDepthQueue();
   virtual void processColorQueue();
   virtual void processPointcloudQueue();
+  virtual void processLidarDepthImageQueue();
   virtual void processServiceRequestTaskQueue();
   virtual void processEsdf();
 
@@ -380,6 +385,9 @@ protected:
   // Pointcloud sub.
   rclcpp::Subscription<sensor_msgs::msg::PointCloud2>::SharedPtr
     pointcloud_sub_;
+  // Lidar depth image sub (direct depth image path, skips pointcloud conversion).
+  rclcpp::Subscription<sensor_msgs::msg::Image>::SharedPtr
+    lidar_depth_image_sub_;
 
   // Optional transform subs.
   rclcpp::Subscription<geometry_msgs::msg::TransformStamped>::SharedPtr
@@ -619,6 +627,7 @@ protected:
 
   // Input queues. Unique pointers are used to enable more flexibility when deallocating.
   std::unique_ptr<std::list<sensor_msgs::msg::PointCloud2::ConstSharedPtr>> pointcloud_queue_;
+  std::unique_ptr<std::list<sensor_msgs::msg::Image::ConstSharedPtr>> lidar_depth_image_queue_;
   std::unique_ptr<std::list<EsdfServiceQueuedType>> esdf_service_queue_;
   std::unique_ptr<std::list<FilePathServiceQueuedType>> file_path_service_queue_;
   std::unique_ptr<std::list<ImageTypeVariant>> depth_image_queue_;
@@ -629,6 +638,7 @@ protected:
   static constexpr char kDepthQueueName[] = "depth_queue";
   static constexpr char kColorQueueName[] = "color_queue";
   static constexpr char kPointcloudQueueName[] = "pointcloud_queue";
+  static constexpr char kLidarDepthImageQueueName[] = "lidar_depth_image_queue";
   static constexpr char kFilePathServiceQueueName[] = "file_path_service_queue";
   static constexpr char kEsdfServiceQueueName[] = "esdf_service_queue";
 
@@ -638,6 +648,7 @@ protected:
   std::mutex depth_mask_queue_mutex_;
   std::mutex color_mask_queue_mutex_;
   std::mutex pointcloud_queue_mutex_;
+  std::mutex lidar_depth_image_queue_mutex_;
   std::mutex esdf_service_queue_mutex_;
   std::mutex file_path_service_queue_mutex_;
 

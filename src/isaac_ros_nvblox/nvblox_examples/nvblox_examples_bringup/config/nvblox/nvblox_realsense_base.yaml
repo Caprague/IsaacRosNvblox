@@ -91,6 +91,7 @@
     use_depth: true
     # lidar settings
     use_lidar: true
+    use_lidar_depth_image: true
     lidar_width: 900
     lidar_height: 16
     lidar_min_valid_range_m: 0.5

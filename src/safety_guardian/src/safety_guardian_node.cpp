@@ -31,16 +31,21 @@ SafetyGuardianNode::SafetyGuardianNode()
   RCLCPP_INFO(this->get_logger(), "Safety Guardian Node is starting...");
 
   // ========== 声明参数 ==========
-
   // VSLAM监控参数
   this->declare_parameter<double>("vslam_timeout_threshold", 0.5);
   this->declare_parameter<double>("vslam_position_threshold", 1.0);
   this->declare_parameter<bool>("vslam_use_tf", true);
   this->declare_parameter<std::string>("vslam_pose_topic", "/visual_slam/tracking/vo_pose");
 
+  // 里程计频率安全监控参数
+  this->declare_parameter<double>("odom_calibration_duration", 5.0);
+  this->declare_parameter<double>("odom_min_frequency_ratio", 0.8);
+  this->declare_parameter<int>("odom_frequency_violation_count", 5);
+
   // 高程频率监测参数
   this->declare_parameter<double>("elevation_calibration_duration", 3.0);
-  this->declare_parameter<double>("elevation_frequency_tolerance", 0.2);
+  this->declare_parameter<double>("elevation_min_frequency_ratio", 0.8);
+  this->declare_parameter<int>("elevation_frequency_violation_count", 5);
 
   // 安全状态发布参数
   this->declare_parameter<double>("status_publish_rate", 10.0);
@@ -63,8 +68,13 @@ SafetyGuardianNode::SafetyGuardianNode()
   this->vslam_use_tf_ = this->get_parameter("vslam_use_tf").as_bool();
   this->vslam_pose_topic_ = this->get_parameter("vslam_pose_topic").as_string();
 
+  this->odom_calibration_duration_ = this->get_parameter("odom_calibration_duration").as_double();
+  this->odom_min_frequency_ratio_ = this->get_parameter("odom_min_frequency_ratio").as_double();
+  this->odom_frequency_violation_count_ = this->get_parameter("odom_frequency_violation_count").as_int();
+
   this->elevation_calibration_duration_ = this->get_parameter("elevation_calibration_duration").as_double();
-  this->elevation_frequency_tolerance_ = this->get_parameter("elevation_frequency_tolerance").as_double();
+  this->elevation_min_frequency_ratio_ = this->get_parameter("elevation_min_frequency_ratio").as_double();
+  this->elevation_frequency_violation_count_ = this->get_parameter("elevation_frequency_violation_count").as_int();
 
   this->status_publish_rate_ = this->get_parameter("status_publish_rate").as_double();
 
@@ -79,8 +89,12 @@ SafetyGuardianNode::SafetyGuardianNode()
   RCLCPP_INFO(this->get_logger(), "Parameters loaded:");
   RCLCPP_INFO(this->get_logger(), "  VSLAM timeout threshold: %.2f s", this->vslam_timeout_threshold_);
   RCLCPP_INFO(this->get_logger(), "  VSLAM position threshold: %.2f m", this->vslam_position_threshold_);
+  RCLCPP_INFO(this->get_logger(), "  Odom calibration duration: %.1f s", this->odom_calibration_duration_);
+  RCLCPP_INFO(this->get_logger(), "  Odom min frequency ratio: %.2f", this->odom_min_frequency_ratio_);
+  RCLCPP_INFO(this->get_logger(), "  Odom violation confirm count: %d", this->odom_frequency_violation_count_);
   RCLCPP_INFO(this->get_logger(), "  Elevation calibration duration: %.1f s", this->elevation_calibration_duration_);
-  RCLCPP_INFO(this->get_logger(), "  Elevation frequency tolerance: %.2f", this->elevation_frequency_tolerance_);
+  RCLCPP_INFO(this->get_logger(), "  Elevation min frequency ratio: %.2f", this->elevation_min_frequency_ratio_);
+  RCLCPP_INFO(this->get_logger(), "  Elevation violation confirm count: %d", this->elevation_frequency_violation_count_);
   RCLCPP_INFO(this->get_logger(), "  Status publish rate: %.2f Hz", this->status_publish_rate_);
   RCLCPP_INFO(this->get_logger(), "  Global frame: %s", this->global_frame_.c_str());
   RCLCPP_INFO(this->get_logger(), "  Base frame: %s", this->base_frame_.c_str());
@@ -94,9 +108,23 @@ SafetyGuardianNode::SafetyGuardianNode()
   // ========== 初始化VSLAM监控状态 ==========
 
   this->last_vslam_update_time_ = this->get_clock()->now();
+  this->last_vslam_tf_stamp_ = rclcpp::Time(0, 0, RCL_ROS_TIME);
   this->vslam_initialized_ = false;
   this->vslam_safe_ = true;
   this->last_position_change_ = 0.0;
+
+  // ========== 初始化里程计频率监控状态 ==========
+
+  this->odom_measured_frequency_ = 0.0;
+  this->odom_baselined_freq_ = 0.0;
+  this->odom_calibration_count_ = 0;
+  this->odom_calibrated_ = false;
+  this->odom_freq_safe_ = true;
+  this->odom_violation_counter_ = 0;
+  this->odom_total_updates_ = 0;
+  this->odom_violation_total_count_ = 0;
+  this->odom_calibration_start_ = this->get_clock()->now();
+  this->last_odom_tf_stamp_ = rclcpp::Time(0, 0, RCL_ROS_TIME);
 
   // ========== 初始化高程频率监测状态 ==========
 
@@ -105,6 +133,9 @@ SafetyGuardianNode::SafetyGuardianNode()
   this->elevation_calibration_count_ = 0;
   this->elevation_received_count_ = 0;
   this->elevation_calibrated_ = false;
+  this->elevation_safe_ = true;
+  this->elevation_violation_counter_ = 0;
+  this->elevation_violation_total_count_ = 0;
   this->last_elevation_time_ = this->get_clock()->now();
   this->elevation_calibration_start_ = this->get_clock()->now();
 
@@ -234,8 +265,8 @@ void SafetyGuardianNode::summaryTimerCallback()
 
   std::cout << BLUE << "----------------------------------------" << RESET << std::endl;
 
-  // --- 安全状态（仅 VSLAM 驱动） ---
-  std::cout << BOLD << "Safety Status (VSLAM-driven):" << RESET << std::endl;
+  // --- 安全状态（VSLAM + 里程计频率 + 高程频率驱动） ---
+  std::cout << BOLD << "Safety Status (VSLAM + Odom Freq + Elevation Freq):" << RESET << std::endl;
   std::cout << "  Overall:        "
             << (this->safety_status_ ? GREEN : RED)
             << (this->safety_status_ ? "SAFE" : "UNSAFE")
@@ -276,11 +307,43 @@ void SafetyGuardianNode::summaryTimerCallback()
   }
   std::cout << BLUE << "----------------------------------------" << RESET << std::endl;
 
-  // --- 高程频率监测（独立于安全状态） ---
-  std::cout << BOLD << "Elevation Freq Monitor (advisory):" << RESET << std::endl;
+  // --- 里程计频率安全监控 ---
+  std::cout << BOLD << "Odom Frequency Monitor:" << RESET << std::endl;
+  {
+    std::lock_guard<std::mutex> lock(this->odom_freq_mutex_);
+    if (!this->odom_calibrated_) {
+      double elapsed = (now - this->odom_calibration_start_).seconds();
+      double remaining = this->odom_calibration_duration_ - elapsed;
+      std::cout << "  Status:         " << YELLOW << "CALIBRATING" << RESET
+                << " (" << std::fixed << std::setprecision(1)
+                << std::max(remaining, 0.0) << " s remaining)" << std::endl;
+      std::cout << "  Samples:        " << this->odom_calibration_count_ << std::endl;
+    } else {
+      std::cout << "  Status:         "
+                << (this->odom_freq_safe_ ? GREEN : RED)
+                << (this->odom_freq_safe_ ? "SAFE" : "UNSAFE")
+                << RESET << std::endl;
+      std::cout << "  Baseline Freq:  " << std::fixed << std::setprecision(1)
+                << this->odom_baselined_freq_ << " Hz" << std::endl;
+      std::cout << "  Measured Freq:  " << std::fixed << std::setprecision(1)
+                << this->odom_measured_frequency_ << " Hz" << std::endl;
+      std::cout << "  Min Safe Freq:  " << std::fixed << std::setprecision(1)
+                << this->odom_baselined_freq_ * this->odom_min_frequency_ratio_ << " Hz" << std::endl;
+      std::cout << "  Violations:     "
+                << (this->odom_violation_counter_ > 0 ? RED : GREEN)
+                << this->odom_violation_counter_ << "/" << this->odom_frequency_violation_count_
+                << RESET << std::endl;
+      std::cout << "  Total Viol.:    " << this->odom_violation_total_count_ << std::endl;
+    }
+    std::cout << "  Total Updates:  " << this->odom_total_updates_ << std::endl;
+  }
+  std::cout << BLUE << "----------------------------------------" << RESET << std::endl;
+
+  // --- 高程频率安全监控 ---
+  std::cout << BOLD << "Elevation Freq Monitor:" << RESET << std::endl;
   {
     std::lock_guard<std::mutex> lock(this->elevation_mutex_);
-    bool elevation_ok = this->getElevationMonitorOk(now);
+    this->updateElevationSafetyMonitor(now);
 
     if (!this->elevation_calibrated_) {
       double elapsed = (now - this->elevation_calibration_start_).seconds();
@@ -289,23 +352,31 @@ void SafetyGuardianNode::summaryTimerCallback()
                 << " (" << std::fixed << std::setprecision(1)
                 << std::max(remaining, 0.0) << " s remaining)" << std::endl;
       std::cout << "  Samples:        " << this->elevation_calibration_count_ << std::endl;
-    } else if (elevation_ok) {
+    } else if (this->elevation_safe_) {
       std::cout << "  Status:         " << GREEN << "OK" << RESET << std::endl;
     } else {
-      std::cout << "  Status:         " << YELLOW << "WARN" << RESET << std::endl;
+      std::cout << "  Status:         " << RED << "UNSAFE" << RESET << std::endl;
     }
 
     if (this->elevation_calibrated_) {
-      double timeout_threshold = 1.0 / this->elevation_baselined_freq_;
+      const double min_freq = this->elevation_baselined_freq_ *
+        this->elevation_min_frequency_ratio_;
+      double timeout_threshold = min_freq > 0.0 ?
+        1.0 / min_freq : 1.0 / this->elevation_baselined_freq_;
       double time_since = (now - this->last_elevation_time_).seconds();
       std::cout << "  Baseline Freq:  " << std::fixed << std::setprecision(1)
                 << this->elevation_baselined_freq_ << " Hz" << std::endl;
       std::cout << "  Measured Freq:  " << std::fixed << std::setprecision(1)
                 << this->elevation_measured_frequency_ << " Hz" << std::endl;
       std::cout << "  Timeout Limit:  " << std::fixed << std::setprecision(3)
-                << timeout_threshold << " s (1 period)" << std::endl;
+                << timeout_threshold << " s (tolerant period)" << std::endl;
       std::cout << "  Time Since Msg: " << std::fixed << std::setprecision(3)
                 << time_since << " s" << std::endl;
+      std::cout << "  Violations:     "
+                << (this->elevation_violation_counter_ > 0 ? RED : GREEN)
+                << this->elevation_violation_counter_ << "/" << this->elevation_frequency_violation_count_
+                << RESET << std::endl;
+      std::cout << "  Total Viol.:    " << this->elevation_violation_total_count_ << std::endl;
     }
     std::cout << "  Msgs Received:  " << this->elevation_received_count_ << std::endl;
   }
@@ -340,6 +411,10 @@ void SafetyGuardianNode::elevationCallback(const std_msgs::msg::Float32MultiArra
         static_cast<double>(this->elevation_calibration_count_ - 1) / elapsed;
       this->elevation_calibrated_ = true;
       this->elevation_measured_frequency_ = this->elevation_baselined_freq_;
+      this->elevation_safe_ = true;
+      this->elevation_violation_counter_ = 0;
+      this->elevation_timestamps_.clear();
+      this->elevation_timestamps_.push_back(now);
       RCLCPP_INFO(this->get_logger(),
                   "Elevation calibration done: baseline freq = %.1f Hz (from %zu samples in %.2f s)",
                   this->elevation_baselined_freq_, this->elevation_calibration_count_, elapsed);
@@ -357,15 +432,17 @@ void SafetyGuardianNode::elevationCallback(const std_msgs::msg::Float32MultiArra
   }
 
   this->elevation_measured_frequency_ = this->calculateElevationFrequency();
+  this->updateElevationSafetyMonitor(now);
 }
 
-void SafetyGuardianNode::updateSafetyStatus(bool vslam_safe)
+void SafetyGuardianNode::updateSafetyStatus(
+  bool vslam_safe, bool odom_freq_safe, bool elevation_safe)
 {
   std::lock_guard<std::mutex> lock(this->safety_mutex_);
 
   if (!this->safety_status_locked_) {
     bool previous_status = this->safety_status_;
-    this->safety_status_ = vslam_safe;
+    this->safety_status_ = vslam_safe && odom_freq_safe && elevation_safe;
 
     if (previous_status != this->safety_status_) {
       if (!this->safety_status_) {
@@ -375,8 +452,10 @@ void SafetyGuardianNode::updateSafetyStatus(bool vslam_safe)
         RCLCPP_ERROR(this->get_logger(), "========================================");
         RCLCPP_ERROR(this->get_logger(), "System is being LOCKED DOWN.");
         RCLCPP_ERROR(this->get_logger(), "Status summary:");
-        RCLCPP_ERROR(this->get_logger(), "  VSLAM monitor:    %s", vslam_safe ? "SAFE" : "UNSAFE");
-        RCLCPP_ERROR(this->get_logger(), "  Overall status:   UNSAFE");
+        RCLCPP_ERROR(this->get_logger(), "  VSLAM monitor:       %s", vslam_safe ? "SAFE" : "UNSAFE");
+        RCLCPP_ERROR(this->get_logger(), "  Odom freq monitor:   %s", odom_freq_safe ? "SAFE" : "UNSAFE");
+        RCLCPP_ERROR(this->get_logger(), "  Elevation monitor:   %s", elevation_safe ? "SAFE" : "UNSAFE");
+        RCLCPP_ERROR(this->get_logger(), "  Overall status:      UNSAFE");
         RCLCPP_ERROR(this->get_logger(), "Action required:");
         RCLCPP_ERROR(this->get_logger(), "  1. Stop all robot operations immediately");
         RCLCPP_ERROR(this->get_logger(), "  2. Investigate the root cause");
@@ -423,21 +502,152 @@ double SafetyGuardianNode::calculateElevationFrequency() const
   return static_cast<double>(this->elevation_timestamps_.size() - 1) / duration;
 }
 
+double SafetyGuardianNode::calculateOdomFrequency() const
+{
+  if (this->odom_timestamps_.size() < 2) {
+    return 0.0;
+  }
+  double duration = (this->odom_timestamps_.back() - this->odom_timestamps_.front()).seconds();
+  if (duration <= 0.0) {
+    return 0.0;
+  }
+  return static_cast<double>(this->odom_timestamps_.size() - 1) / duration;
+}
+
+void SafetyGuardianNode::updateOdomFrequencyMonitor(const rclcpp::Time & tf_stamp)
+{
+  std::lock_guard<std::mutex> lock(this->odom_freq_mutex_);
+  if (tf_stamp == this->last_odom_tf_stamp_) {
+    if (this->odom_calibrated_) {
+      const double min_freq = this->odom_baselined_freq_ * this->odom_min_frequency_ratio_;
+      const double timeout_threshold = min_freq > 0.0 ? 1.0 / min_freq : this->vslam_timeout_threshold_;
+      const double time_since_update = (this->get_clock()->now() - this->last_odom_tf_stamp_).seconds();
+      if (time_since_update > timeout_threshold) {
+        this->odom_violation_counter_++;
+        this->odom_violation_total_count_++;
+        this->odom_measured_frequency_ = 0.0;
+        RCLCPP_WARN_THROTTLE(this->get_logger(), *this->get_clock(), 1000,
+                             "Odom TF stamp stale: %.3f s > %.3f s (%d/%d violations)",
+                             time_since_update, timeout_threshold,
+                             this->odom_violation_counter_, this->odom_frequency_violation_count_);
+        if (this->odom_violation_counter_ >= this->odom_frequency_violation_count_) {
+          this->odom_freq_safe_ = false;
+          RCLCPP_ERROR(this->get_logger(),
+                       "ODOM FREQUENCY SAFETY VIOLATION: TF stamp stale for %.3f s (limit: %.3f s)",
+                       time_since_update, timeout_threshold);
+        }
+      }
+    }
+    return;
+  }
+
+  rclcpp::Time now = this->get_clock()->now();
+  this->last_odom_tf_stamp_ = tf_stamp;
+  this->odom_total_updates_++;
+
+  if (!this->odom_calibrated_) {
+    if (this->odom_calibration_count_ == 0) {
+      this->odom_calibration_start_ = now;
+      RCLCPP_INFO(this->get_logger(), "Odom frequency calibration started (%.1f s sampling)...",
+                  this->odom_calibration_duration_);
+    }
+
+    this->odom_calibration_count_++;
+    double elapsed = (now - this->odom_calibration_start_).seconds();
+    if (elapsed >= this->odom_calibration_duration_) {
+      this->odom_baselined_freq_ =
+        static_cast<double>(this->odom_calibration_count_ - 1) / elapsed;
+      this->odom_calibrated_ = true;
+      this->odom_measured_frequency_ = this->odom_baselined_freq_;
+      this->odom_freq_safe_ = true;
+      RCLCPP_INFO(this->get_logger(),
+                  "Odom frequency calibration done: baseline freq = %.1f Hz (from %zu samples in %.2f s)",
+                  this->odom_baselined_freq_, this->odom_calibration_count_, elapsed);
+    }
+    return;
+  }
+
+  this->odom_timestamps_.push_back(tf_stamp);
+  size_t window_size = std::max(
+    static_cast<size_t>(this->odom_baselined_freq_ * 2.0), size_t(10));
+  while (this->odom_timestamps_.size() > window_size) {
+    this->odom_timestamps_.erase(this->odom_timestamps_.begin());
+  }
+
+  this->odom_measured_frequency_ = this->calculateOdomFrequency();
+  const double min_freq = this->odom_baselined_freq_ * this->odom_min_frequency_ratio_;
+  if (this->odom_measured_frequency_ < min_freq) {
+    this->odom_violation_counter_++;
+    this->odom_violation_total_count_++;
+    RCLCPP_WARN_THROTTLE(this->get_logger(), *this->get_clock(), 1000,
+                         "Odom frequency low: %.1f Hz < %.1f Hz (%d/%d violations)",
+                         this->odom_measured_frequency_, min_freq,
+                         this->odom_violation_counter_, this->odom_frequency_violation_count_);
+
+    if (this->odom_violation_counter_ >= this->odom_frequency_violation_count_) {
+      this->odom_freq_safe_ = false;
+      RCLCPP_ERROR(this->get_logger(),
+                   "ODOM FREQUENCY SAFETY VIOLATION: %.1f Hz < %.1f Hz (baseline: %.1f Hz, ratio: %.2f)",
+                   this->odom_measured_frequency_, min_freq,
+                   this->odom_baselined_freq_, this->odom_min_frequency_ratio_);
+    }
+  } else {
+    this->odom_violation_counter_ = 0;
+    this->odom_freq_safe_ = true;
+  }
+}
+
+void SafetyGuardianNode::updateElevationSafetyMonitor(const rclcpp::Time & now)
+{
+  if (!this->elevation_calibrated_) {
+    this->elevation_safe_ = true;
+    return;
+  }
+
+  const bool elevation_ok = this->getElevationMonitorOk(now);
+  if (!elevation_ok) {
+    this->elevation_violation_counter_++;
+    this->elevation_violation_total_count_++;
+
+    const double min_freq = this->elevation_baselined_freq_ *
+      this->elevation_min_frequency_ratio_;
+    const double timeout_threshold = min_freq > 0.0 ?
+      1.0 / min_freq : 1.0 / this->elevation_baselined_freq_;
+    const double time_since = (now - this->last_elevation_time_).seconds();
+
+    RCLCPP_WARN_THROTTLE(this->get_logger(), *this->get_clock(), 1000,
+                         "Elevation frequency abnormal: measured %.1f Hz, min %.1f Hz, time since msg %.3f s, limit %.3f s (%d/%d violations)",
+                         this->elevation_measured_frequency_, min_freq,
+                         time_since, timeout_threshold,
+                         this->elevation_violation_counter_,
+                         this->elevation_frequency_violation_count_);
+
+    if (this->elevation_violation_counter_ >= this->elevation_frequency_violation_count_) {
+      this->elevation_safe_ = false;
+      RCLCPP_ERROR(this->get_logger(),
+                   "ELEVATION FREQUENCY SAFETY VIOLATION: measured %.1f Hz, min %.1f Hz, time since msg %.3f s, limit %.3f s",
+                   this->elevation_measured_frequency_, min_freq,
+                   time_since, timeout_threshold);
+    }
+  } else {
+    this->elevation_violation_counter_ = 0;
+    this->elevation_safe_ = true;
+  }
+}
+
 bool SafetyGuardianNode::getElevationMonitorOk(const rclcpp::Time & now) const
 {
   if (!this->elevation_calibrated_) {
     return false;
   }
 
-  // 超时阈值 = 1个周期
-  double timeout_threshold = 1.0 / this->elevation_baselined_freq_;
+  const double min_freq = this->elevation_baselined_freq_ * this->elevation_min_frequency_ratio_;
+  const double timeout_threshold = min_freq > 0.0 ? 1.0 / min_freq : 1.0 / this->elevation_baselined_freq_;
   double time_since_last = (now - this->last_elevation_time_).seconds();
   if (time_since_last > timeout_threshold) {
     return false;
   }
 
-  // 频率检查：实测频率低于 基准*(1-容差) 则异常
-  double min_freq = this->elevation_baselined_freq_ * (1.0 - this->elevation_frequency_tolerance_);
   if (this->elevation_measured_frequency_ < min_freq) {
     return false;
   }
@@ -526,7 +736,72 @@ void SafetyGuardianNode::publishDiagnostics()
 
   diag_array.status.push_back(vslam_status);
 
-  // 高程频率监测诊断（advisory，不影响安全状态）
+  // 里程计频率安全监控诊断
+  diagnostic_msgs::msg::DiagnosticStatus odom_freq_status;
+  odom_freq_status.name = "Odom Frequency Monitor";
+  odom_freq_status.hardware_id = "Odom";
+
+  {
+    std::lock_guard<std::mutex> lock(this->odom_freq_mutex_);
+
+    diagnostic_msgs::msg::KeyValue kv2;
+    kv2.key = "Calibrated";
+    kv2.value = this->odom_calibrated_ ? "true" : "false";
+    odom_freq_status.values.push_back(kv2);
+
+    diagnostic_msgs::msg::KeyValue kv3;
+    kv3.key = "Odom frequency safe";
+    kv3.value = this->odom_freq_safe_ ? "true" : "false";
+    odom_freq_status.values.push_back(kv3);
+
+    if (this->odom_calibrated_) {
+      diagnostic_msgs::msg::KeyValue kv4;
+      kv4.key = "Baseline frequency";
+      kv4.value = std::to_string(this->odom_baselined_freq_) + " Hz";
+      odom_freq_status.values.push_back(kv4);
+
+      diagnostic_msgs::msg::KeyValue kv5;
+      kv5.key = "Measured frequency";
+      kv5.value = std::to_string(this->odom_measured_frequency_) + " Hz";
+      odom_freq_status.values.push_back(kv5);
+
+      diagnostic_msgs::msg::KeyValue kv6;
+      kv6.key = "Minimum safe frequency";
+      kv6.value = std::to_string(this->odom_baselined_freq_ * this->odom_min_frequency_ratio_) + " Hz";
+      odom_freq_status.values.push_back(kv6);
+    }
+
+    diagnostic_msgs::msg::KeyValue kv7;
+    kv7.key = "Violation counter";
+    kv7.value = std::to_string(this->odom_violation_counter_) + "/" +
+                std::to_string(this->odom_frequency_violation_count_);
+    odom_freq_status.values.push_back(kv7);
+
+    diagnostic_msgs::msg::KeyValue kv8;
+    kv8.key = "Total violations";
+    kv8.value = std::to_string(this->odom_violation_total_count_);
+    odom_freq_status.values.push_back(kv8);
+
+    diagnostic_msgs::msg::KeyValue kv9;
+    kv9.key = "Total updates";
+    kv9.value = std::to_string(this->odom_total_updates_);
+    odom_freq_status.values.push_back(kv9);
+
+    if (!this->odom_calibrated_) {
+      odom_freq_status.level = diagnostic_msgs::msg::DiagnosticStatus::WARN;
+      odom_freq_status.message = "Odom frequency calibrating...";
+    } else if (this->odom_freq_safe_) {
+      odom_freq_status.level = diagnostic_msgs::msg::DiagnosticStatus::OK;
+      odom_freq_status.message = "Odom frequency normal";
+    } else {
+      odom_freq_status.level = diagnostic_msgs::msg::DiagnosticStatus::ERROR;
+      odom_freq_status.message = "Odom frequency below safety threshold";
+    }
+  }
+
+  diag_array.status.push_back(odom_freq_status);
+
+  // 高程频率安全监控诊断
   diagnostic_msgs::msg::DiagnosticStatus elevation_status;
   elevation_status.name = "Elevation Freq Monitor";
   elevation_status.hardware_id = "Elevation";
@@ -552,8 +827,12 @@ void SafetyGuardianNode::publishDiagnostics()
       elevation_status.values.push_back(kv3);
 
       diagnostic_msgs::msg::KeyValue kv4;
-      kv4.key = "Timeout threshold (1 period)";
-      kv4.value = std::to_string(1.0 / this->elevation_baselined_freq_) + " s";
+      kv4.key = "Timeout threshold (tolerant period)";
+      const double min_freq = this->elevation_baselined_freq_ *
+        this->elevation_min_frequency_ratio_;
+      const double timeout_threshold = min_freq > 0.0 ?
+        1.0 / min_freq : 1.0 / this->elevation_baselined_freq_;
+      kv4.value = std::to_string(timeout_threshold) + " s";
       elevation_status.values.push_back(kv4);
     }
 
@@ -562,16 +841,19 @@ void SafetyGuardianNode::publishDiagnostics()
     kv5.value = std::to_string(this->elevation_received_count_);
     elevation_status.values.push_back(kv5);
 
-    bool elevation_ok = this->getElevationMonitorOk(now);
+    this->updateElevationSafetyMonitor(now);
     if (!this->elevation_calibrated_) {
       elevation_status.level = diagnostic_msgs::msg::DiagnosticStatus::WARN;
       elevation_status.message = "Elevation frequency calibrating...";
-    } else if (elevation_ok) {
+    } else if (this->elevation_safe_) {
       elevation_status.level = diagnostic_msgs::msg::DiagnosticStatus::OK;
       elevation_status.message = "Elevation frequency normal";
     } else {
-      elevation_status.level = diagnostic_msgs::msg::DiagnosticStatus::WARN;
-      double timeout_threshold = 1.0 / this->elevation_baselined_freq_;
+      elevation_status.level = diagnostic_msgs::msg::DiagnosticStatus::ERROR;
+      const double min_freq = this->elevation_baselined_freq_ *
+        this->elevation_min_frequency_ratio_;
+      double timeout_threshold = min_freq > 0.0 ?
+        1.0 / min_freq : 1.0 / this->elevation_baselined_freq_;
       double time_since = (now - this->last_elevation_time_).seconds();
       if (time_since > timeout_threshold) {
         elevation_status.message = "Elevation message timeout: " +
@@ -580,20 +862,21 @@ void SafetyGuardianNode::publishDiagnostics()
       } else {
         elevation_status.message = "Elevation frequency below baseline: " +
                                    std::to_string(this->elevation_measured_frequency_) + " Hz (min: " +
-                                   std::to_string(this->elevation_baselined_freq_ * (1.0 - this->elevation_frequency_tolerance_)) + " Hz)";
+                                   std::to_string(this->elevation_baselined_freq_ * this->elevation_min_frequency_ratio_) + " Hz)";
       }
     }
   }
 
   diag_array.status.push_back(elevation_status);
 
-  // 整体安全状态诊断（仅由 VSLAM 驱动）
+  // 整体安全状态诊断（由 VSLAM、里程计频率和高程频率共同驱动）
   diagnostic_msgs::msg::DiagnosticStatus overall_status;
   overall_status.name = "Overall Safety Status";
   overall_status.hardware_id = "Safety Guardian";
 
   {
     std::lock_guard<std::mutex> lock(this->safety_mutex_);
+    rclcpp::Time now = this->get_clock()->now();
 
     diagnostic_msgs::msg::KeyValue kv1;
     kv1.key = "Safety status";
@@ -610,12 +893,34 @@ void SafetyGuardianNode::publishDiagnostics()
     kv3.value = this->vslam_safe_ ? "true" : "false";
     overall_status.values.push_back(kv3);
 
+    bool odom_freq_safe = true;
+    {
+      std::lock_guard<std::mutex> odom_lock(this->odom_freq_mutex_);
+      odom_freq_safe = this->odom_freq_safe_;
+    }
+
+    diagnostic_msgs::msg::KeyValue kv3b;
+    kv3b.key = "Odom frequency safe";
+    kv3b.value = odom_freq_safe ? "true" : "false";
+    overall_status.values.push_back(kv3b);
+
+    bool elevation_safe = true;
+    {
+      std::lock_guard<std::mutex> elevation_lock(this->elevation_mutex_);
+      this->updateElevationSafetyMonitor(now);
+      elevation_safe = this->elevation_safe_;
+    }
+
+    diagnostic_msgs::msg::KeyValue kv3c;
+    kv3c.key = "Elevation frequency safe";
+    kv3c.value = elevation_safe ? "true" : "false";
+    overall_status.values.push_back(kv3c);
+
     diagnostic_msgs::msg::KeyValue kv4;
     kv4.key = "Status publish rate";
     kv4.value = std::to_string(this->status_publish_rate_) + " Hz";
     overall_status.values.push_back(kv4);
 
-    rclcpp::Time now = this->get_clock()->now();
     double uptime = (now - this->node_start_time_).seconds();
 
     diagnostic_msgs::msg::KeyValue kv5;
@@ -645,11 +950,11 @@ void SafetyGuardianNode::publishDiagnostics()
 
     if (this->safety_status_) {
       overall_status.level = diagnostic_msgs::msg::DiagnosticStatus::OK;
-      overall_status.message = "System is safe - VSLAM operating normally";
+      overall_status.message = "System is safe - VSLAM, odom frequency and elevation frequency normal";
     } else {
       overall_status.level = diagnostic_msgs::msg::DiagnosticStatus::ERROR;
       if (this->safety_status_locked_) {
-        overall_status.message = "SYSTEM LOCKED DOWN - VSLAM safety violation detected";
+        overall_status.message = "SYSTEM LOCKED DOWN - safety violation detected";
       } else {
         overall_status.message = "System is unsafe";
       }
@@ -661,7 +966,8 @@ void SafetyGuardianNode::publishDiagnostics()
   this->diagnostics_pub_->publish(diag_array);
 }
 
-bool SafetyGuardianNode::getCurrentPositionFromTF(geometry_msgs::msg::Point & position)
+bool SafetyGuardianNode::getCurrentPositionFromTF(
+  geometry_msgs::msg::Point & position, rclcpp::Time * tf_stamp)
 {
   try {
     geometry_msgs::msg::TransformStamped transform;
@@ -674,6 +980,9 @@ bool SafetyGuardianNode::getCurrentPositionFromTF(geometry_msgs::msg::Point & po
     position.x = transform.transform.translation.x;
     position.y = transform.transform.translation.y;
     position.z = transform.transform.translation.z;
+    if (tf_stamp != nullptr) {
+      *tf_stamp = rclcpp::Time(transform.header.stamp);
+    }
 
     return true;
   } catch (tf2::LookupException & ex) {
@@ -715,7 +1024,8 @@ void SafetyGuardianNode::monitorVSLAMStatus()
   }
 
   geometry_msgs::msg::Point current_position;
-  bool success = this->getCurrentPositionFromTF(current_position);
+  rclcpp::Time current_tf_stamp;
+  bool success = this->getCurrentPositionFromTF(current_position, &current_tf_stamp);
 
   if (!success) {
     rclcpp::Time now = this->get_clock()->now();
@@ -734,12 +1044,56 @@ void SafetyGuardianNode::monitorVSLAMStatus()
                           "TF lookup failed, but timeout not reached yet: %.2f / %.2f s",
                           time_since_update, this->vslam_timeout_threshold_);
     }
-    this->updateSafetyStatus(this->vslam_safe_);
+    bool odom_freq_safe = true;
+    {
+      std::lock_guard<std::mutex> odom_lock(this->odom_freq_mutex_);
+      odom_freq_safe = this->odom_freq_safe_;
+    }
+    bool elevation_safe = true;
+    {
+      std::lock_guard<std::mutex> elevation_lock(this->elevation_mutex_);
+      this->updateElevationSafetyMonitor(now);
+      elevation_safe = this->elevation_safe_;
+    }
+    this->updateSafetyStatus(this->vslam_safe_, odom_freq_safe, elevation_safe);
     return;
   }
 
-  this->last_vslam_update_time_ = this->get_clock()->now();
-  this->total_vslam_updates_++;
+  const rclcpp::Time current_time = this->get_clock()->now();
+  const bool new_vslam_tf = current_tf_stamp != this->last_vslam_tf_stamp_;
+
+  if (new_vslam_tf) {
+    this->last_vslam_tf_stamp_ = current_tf_stamp;
+    this->last_vslam_update_time_ = current_time;
+    this->total_vslam_updates_++;
+  }
+
+  this->updateOdomFrequencyMonitor(current_tf_stamp);
+
+  if (!new_vslam_tf) {
+    const double time_since_update = (current_time - this->last_vslam_update_time_).seconds();
+    if (this->vslam_initialized_ && time_since_update > this->vslam_timeout_threshold_) {
+      this->vslam_safe_ = false;
+      this->vslam_timeout_count_++;
+      RCLCPP_ERROR(this->get_logger(),
+                   "VSLAM TF STALE: %.2f s since last new TF stamp (threshold: %.2f s)",
+                   time_since_update, this->vslam_timeout_threshold_);
+    }
+
+    bool odom_freq_safe = true;
+    {
+      std::lock_guard<std::mutex> odom_lock(this->odom_freq_mutex_);
+      odom_freq_safe = this->odom_freq_safe_;
+    }
+    bool elevation_safe = true;
+    {
+      std::lock_guard<std::mutex> elevation_lock(this->elevation_mutex_);
+      this->updateElevationSafetyMonitor(current_time);
+      elevation_safe = this->elevation_safe_;
+    }
+    this->updateSafetyStatus(this->vslam_safe_, odom_freq_safe, elevation_safe);
+    return;
+  }
 
   if (this->vslam_initialized_) {
     double position_change = this->calculateDistance(current_position, this->last_position_);
@@ -781,8 +1135,19 @@ void SafetyGuardianNode::monitorVSLAMStatus()
 
   this->last_position_ = current_position;
 
-  // 安全状态仅由 VSLAM 驱动
-  this->updateSafetyStatus(this->vslam_safe_);
+  // 安全状态由 VSLAM、里程计频率与高程频率共同驱动
+  bool odom_freq_safe = true;
+  {
+    std::lock_guard<std::mutex> odom_lock(this->odom_freq_mutex_);
+    odom_freq_safe = this->odom_freq_safe_;
+  }
+  bool elevation_safe = true;
+  {
+    std::lock_guard<std::mutex> elevation_lock(this->elevation_mutex_);
+    this->updateElevationSafetyMonitor(this->get_clock()->now());
+    elevation_safe = this->elevation_safe_;
+  }
+  this->updateSafetyStatus(this->vslam_safe_, odom_freq_safe, elevation_safe);
 }
 
 }  // namespace safety_guardian

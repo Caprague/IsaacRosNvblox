@@ -1,5 +1,4 @@
 #include "height_scan_bridge/udp_height_scan_sender.hpp"
-
 #include <cstring>
 
 UDPHeightScanSender::UDPHeightScanSender()

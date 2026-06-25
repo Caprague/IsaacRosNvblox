@@ -1,5 +1,4 @@
 #include "height_scan_bridge/udp_safety_guardian_sender.hpp"
-
 #include <cstring>
 
 UDPSafetyGuardianSender::UDPSafetyGuardianSender()

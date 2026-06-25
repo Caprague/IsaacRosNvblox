@@ -41,7 +41,7 @@ namespace safety_guardian
 /**
  * @brief 安全保护节点
  *
- * 该节点负责监控 VSLAM 定位和高程采样的安全性，并发布安全状态。
+ * 该节点负责监控 VSLAM 定位、里程计更新频率和高程采样的安全性，并发布安全状态。
  * 实现锁死机制：一旦检测到不安全状态，状态将永久保持为 false。
  */
 class SafetyGuardianNode : public rclcpp::Node
@@ -68,7 +68,13 @@ private:
 
   // 高程频率监测参数
   double elevation_calibration_duration_;    // 采样校准时长（秒），用于自动计算期望频率
-  double elevation_frequency_tolerance_;    // 频率容差比例（0~1），默认0.2
+  double elevation_min_frequency_ratio_;     // 最低安全频率比例
+  int elevation_frequency_violation_count_; // 频率异常连续确认次数
+
+  // 里程计频率安全监控参数
+  double odom_calibration_duration_;         // 里程计频率校准时长（秒）
+  double odom_min_frequency_ratio_;          // 最低安全频率比例
+  int odom_frequency_violation_count_;       // 频率异常连续确认次数
 
   // 安全状态发布参数
   double status_publish_rate_;          // 安全状态发布频率（Hz）
@@ -127,6 +133,7 @@ private:
   mutable std::mutex vslam_mutex_;
 
   rclcpp::Time last_vslam_update_time_; // 最后一次VSLAM更新时间
+  rclcpp::Time last_vslam_tf_stamp_;    // 最近一次不同VSLAM TF的时间戳
   geometry_msgs::msg::Point last_position_;  // 上一次位姿
   bool vslam_initialized_;              // VSLAM是否已初始化
   bool vslam_safe_;                     // VSLAM安全状态
@@ -142,8 +149,27 @@ private:
   double elevation_measured_frequency_;          // 实测高程消息频率（Hz）
   size_t elevation_calibration_count_;           // 校准期消息计数
   bool elevation_calibrated_;                    // 是否完成校准
+  bool elevation_safe_;                          // 高程频率是否安全
+  int elevation_violation_counter_;              // 当前连续违规计数
+  size_t elevation_violation_total_count_;       // 累计违规次数
   size_t elevation_received_count_;              // 高程消息接收计数
   std::vector<rclcpp::Time> elevation_timestamps_; // 滑动窗口时间戳
+
+  // ========== 里程计频率监控状态 ==========
+
+  mutable std::mutex odom_freq_mutex_;
+
+  rclcpp::Time odom_calibration_start_;          // 校准开始时间
+  rclcpp::Time last_odom_tf_stamp_;              // 最近一次不同 TF 的时间戳
+  double odom_baselined_freq_;                   // 校准得到的基准频率（Hz）
+  double odom_measured_frequency_;               // 实测里程计更新频率（Hz）
+  size_t odom_calibration_count_;                // 校准期 TF 更新计数
+  bool odom_calibrated_;                         // 是否完成校准
+  bool odom_freq_safe_;                          // 里程计频率是否安全
+  int odom_violation_counter_;                   // 当前连续违规计数
+  size_t odom_total_updates_;                    // TF 更新总次数
+  size_t odom_violation_total_count_;            // 累计违规次数
+  std::vector<rclcpp::Time> odom_timestamps_;    // 滑动窗口时间戳
 
   // ========== 统计信息 ==========
 
@@ -186,10 +212,12 @@ private:
   // ========== 辅助函数 ==========
 
   /**
-   * @brief 更新安全状态（仅由VSLAM驱动）
+   * @brief 更新安全状态
    * @param vslam_safe VSLAM是否安全
+   * @param odom_freq_safe 里程计频率是否安全
+   * @param elevation_safe 高程频率是否安全
    */
-  void updateSafetyStatus(bool vslam_safe);
+  void updateSafetyStatus(bool vslam_safe, bool odom_freq_safe, bool elevation_safe);
 
   /**
    * @brief 获取当前安全状态
@@ -214,6 +242,23 @@ private:
   double calculateElevationFrequency() const;
 
   /**
+   * @brief 计算里程计实测更新频率
+   * @return 实测频率（Hz），数据不足返回0
+   */
+  double calculateOdomFrequency() const;
+
+  /**
+   * @brief 更新里程计频率监控（在 TF 查询成功时调用）
+   */
+  void updateOdomFrequencyMonitor(const rclcpp::Time & tf_stamp);
+
+  /**
+   * @brief 更新高程频率安全状态（在安全检查周期中调用）
+   * @param now 当前时间
+   */
+  void updateElevationSafetyMonitor(const rclcpp::Time & now);
+
+  /**
    * @brief 获取高程监测状态描述（用于打印）
    * @param now 当前时间
    * @return true=绿色(正常), false=黄色(警告)
@@ -230,7 +275,7 @@ private:
    * @param position 输出位姿
    * @return 是否成功获取
    */
-  bool getCurrentPositionFromTF(geometry_msgs::msg::Point & position);
+  bool getCurrentPositionFromTF(geometry_msgs::msg::Point & position, rclcpp::Time * tf_stamp = nullptr);
 
   /**
    * @brief 监控VSLAM状态

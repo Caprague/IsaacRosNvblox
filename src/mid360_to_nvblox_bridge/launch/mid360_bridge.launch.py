@@ -30,8 +30,14 @@ def generate_launch_description():
 
     output_topic_arg = DeclareLaunchArgument(
         'output_pointcloud_topic',
-        default_value='/lidar/pointcloud_structured',
+        default_value='/mid360_bridge/output/pointcloud_structured',
         description='Output structured pointcloud topic for nvblox'
+    )
+
+    output_depth_image_topic_arg = DeclareLaunchArgument(
+        'output_depth_image_topic',
+        default_value='/mid360_bridge/output/depth_image',
+        description='Output lidar depth image topic for nvblox'
     )
 
     # Livox Mid360 driver
@@ -69,6 +75,7 @@ def generate_launch_description():
             remappings=[
                 ('~/input/pointcloud', LaunchConfiguration('input_pointcloud_topic')),
                 ('~/output/structured_pointcloud', LaunchConfiguration('output_pointcloud_topic')),
+                ('~/output/depth_image', LaunchConfiguration('output_depth_image_topic')),
             ]
         )]
     )
@@ -77,6 +84,7 @@ def generate_launch_description():
         config_file_arg,
         input_topic_arg,
         output_topic_arg,
+        output_depth_image_topic_arg,
         livox_driver,
         static_tf_camera_to_lidar,
         static_tf_lidar_to_livox_frame,

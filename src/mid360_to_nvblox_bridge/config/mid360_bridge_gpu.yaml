@@ -17,4 +17,5 @@
     max_hole_fill_iterations: 0
     
     # 输出选项
-    output_intensity: false
+    enable_structured_output: false
+    enable_depth_image_output: true

@@ -42,7 +42,7 @@ def generate_launch_description():
         arguments=['--ros-args', '--log-level', 'info'],
         # 启用 respawn 功能（类似 ROS1 的 always_on）
         respawn=True,
-        respawn_delay=2.0  # 重启延迟 2 秒
+        respawn_delay=1.0  # 重启延迟 1 秒
     )
 
     # 添加事件处理器，当节点退出时记录日志

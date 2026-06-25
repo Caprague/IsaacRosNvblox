@@ -124,6 +124,7 @@ void initializeNvbloxNodeParams(
   initParam<bool>(node, &params->use_depth, parameter_tree);
   initParam<bool>(node, &params->use_segmentation, parameter_tree);
   initParam<bool>(node, &params->use_lidar, parameter_tree);
+  initParam<bool>(node, &params->use_lidar_depth_image, parameter_tree);
   initParam<bool>(node, &params->use_non_equal_vertical_fov_lidar_params, parameter_tree);
   initParam<bool>(node, &params->print_timings_to_console, parameter_tree);
   initParam<bool>(node, &params->print_rates_to_console, parameter_tree);

@@ -21,6 +21,8 @@ Mid360BridgeNode::Mid360BridgeNode(const rclcpp::NodeOptions & options)
   this->declare_parameter("max_hole_fill_iterations", 2);
   this->declare_parameter("aggregation_method", "mean");
   this->declare_parameter("enable_perf_monitoring", true);
+  this->declare_parameter("enable_structured_output", true);
+  this->declare_parameter("enable_depth_image_output", true);
 
   // Initialize virtual LiDAR configuration
   config_.width = this->get_parameter("virtual_lidar_width").as_int();
@@ -40,14 +42,23 @@ Mid360BridgeNode::Mid360BridgeNode(const rclcpp::NodeOptions & options)
   max_hole_fill_iterations_ = this->get_parameter("max_hole_fill_iterations").as_int();
   aggregation_method_ = this->get_parameter("aggregation_method").as_string();
   enable_perf_monitoring_ = this->get_parameter("enable_perf_monitoring").as_bool();
+  enable_structured_output_ = this->get_parameter("enable_structured_output").as_bool();
+  enable_depth_image_output_ = this->get_parameter("enable_depth_image_output").as_bool();
 
   // Create subscriber and publisher
   sub_pointcloud_ = this->create_subscription<sensor_msgs::msg::PointCloud2>(
     "~/input/pointcloud", 10,
     std::bind(&Mid360BridgeNode::pointcloudCallback, this, std::placeholders::_1));
 
-  pub_structured_ = this->create_publisher<sensor_msgs::msg::PointCloud2>(
-    "~/output/structured_pointcloud", 10);
+  if (enable_structured_output_) {
+    pub_structured_ = this->create_publisher<sensor_msgs::msg::PointCloud2>(
+      "~/output/structured_pointcloud", 10);
+  }
+
+  if (enable_depth_image_output_) {
+    pub_depth_image_ = this->create_publisher<sensor_msgs::msg::Image>(
+      "~/output/depth_image", 10);
+  }
 
   // Initialize GPU converter
   cuda::VirtualLidarConfig gpu_config;
@@ -70,6 +81,8 @@ Mid360BridgeNode::Mid360BridgeNode(const rclcpp::NodeOptions & options)
     "  Elevation FOV: [%.1f°, %.1f°]\n"
     "  Angular res: %.2f° (H) x %.2f° (V)\n"
     "  Hole filling: %s\n"
+    "  Structured output: %s\n"
+    "  Depth image output: %s\n"
     "  GPU: %s",
     config_.width, config_.height,
     config_.min_range_m, config_.max_range_m,
@@ -77,6 +90,8 @@ Mid360BridgeNode::Mid360BridgeNode(const rclcpp::NodeOptions & options)
     config_.azimuth_res_rad * 180.0f / M_PI,
     config_.elevation_res_rad * 180.0f / M_PI,
     enable_hole_filling_ ? "enabled" : "disabled",
+    enable_structured_output_ ? "enabled" : "disabled",
+    enable_depth_image_output_ ? "enabled" : "disabled",
     cuda::getCudaDeviceInfo().c_str());
 
   // Setup performance monitoring
@@ -95,8 +110,74 @@ Mid360BridgeNode::~Mid360BridgeNode()
 void Mid360BridgeNode::pointcloudCallback(
   const sensor_msgs::msg::PointCloud2::SharedPtr msg)
 {
-  auto structured_cloud = convertToStructured(msg);
-  pub_structured_->publish(structured_cloud);
+  if (enable_structured_output_) {
+    auto structured_cloud = convertToStructured(msg);
+    pub_structured_->publish(structured_cloud);
+  }
+
+  if (enable_depth_image_output_) {
+    auto depth_img = convertToDepthImage(msg);
+    pub_depth_image_->publish(depth_img);
+  }
+}
+
+sensor_msgs::msg::Image Mid360BridgeNode::convertToDepthImage(
+  const sensor_msgs::msg::PointCloud2::SharedPtr & input_cloud)
+{
+  auto start = std::chrono::high_resolution_clock::now();
+  const size_t num_points = input_cloud->width * input_cloud->height;
+
+  std::vector<float> input_x, input_y, input_z;
+  input_x.reserve(num_points);
+  input_y.reserve(num_points);
+  input_z.reserve(num_points);
+
+  sensor_msgs::PointCloud2ConstIterator<float> iter_x(*input_cloud, "x");
+  sensor_msgs::PointCloud2ConstIterator<float> iter_y(*input_cloud, "y");
+  sensor_msgs::PointCloud2ConstIterator<float> iter_z(*input_cloud, "z");
+
+  for (; iter_x != iter_x.end(); ++iter_x, ++iter_y, ++iter_z) {
+    input_x.push_back(*iter_x);
+    input_y.push_back(*iter_y);
+    input_z.push_back(*iter_z);
+  }
+
+  cuda::AggregationMethod method = cuda::AggregationMethod::MEAN;
+  if (aggregation_method_ == "min") {
+    method = cuda::AggregationMethod::MIN;
+  } else if (aggregation_method_ == "max") {
+    method = cuda::AggregationMethod::MAX;
+  }
+
+  std::vector<float> depth_data;
+  gpu_converter_->convertToDepthImage(
+    input_x, input_y, input_z,
+    depth_data,
+    method,
+    max_hole_fill_iterations_);
+
+  sensor_msgs::msg::Image depth_img;
+  depth_img.header = input_cloud->header;
+  depth_img.header.frame_id = "lidar";
+  depth_img.height = config_.height;
+  depth_img.width = config_.width;
+  depth_img.encoding = "32FC1";
+  depth_img.is_bigendian = false;
+  depth_img.step = config_.width * sizeof(float);
+  depth_img.data.resize(depth_data.size() * sizeof(float));
+  memcpy(depth_img.data.data(), depth_data.data(), depth_img.data.size());
+
+  auto end = std::chrono::high_resolution_clock::now();
+  double elapsed_ms = std::chrono::duration<double, std::milli>(end - start).count();
+  perf_stats_.total_time_ms += elapsed_ms;
+  perf_stats_.count++;
+
+  RCLCPP_DEBUG(
+    this->get_logger(),
+    "GPU depth image: %zu points -> %dx%d image in %.2f ms",
+    num_points, config_.width, config_.height, elapsed_ms);
+
+  return depth_img;
 }
 
 sensor_msgs::msg::PointCloud2 Mid360BridgeNode::convertToStructured(

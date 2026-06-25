@@ -35,16 +35,34 @@ safety_guardian_node:
     # 备选位姿话题（当 vslam_use_tf 为 false 时使用）
     vslam_pose_topic: "/visual_slam/tracking/vo_pose"
 
-    # ========== 高程频率监测参数（仅供参考，不关联安全状态） ==========
+    # ========== 里程计频率安全监控参数 ==========
+
+    # 里程计频率校准时长（秒）
+    # 启动后先采集这段时间的 TF 更新，自动计算基准频率
+    odom_calibration_duration: 5.0
+
+    # 里程计最低安全频率比例（0~1）
+    # 实测频率低于 基准频率 * 此比例 时判定为 unsafe
+    odom_min_frequency_ratio: 0.8
+
+    # 里程计频率异常连续确认次数
+    # 连续 N 次检测到频率异常才触发 unsafe，避免单次抖动误判
+    odom_frequency_violation_count: 5
+
+    # ========== 高程频率安全监控参数 ==========
 
     # 采样校准时长（秒）
     # 启动后先采集这段时间的消息，自动计算基准频率
     elevation_calibration_duration: 3.0
 
-    # 频率容差比例（0~1）
-    # 实测频率低于 基准频率*(1-容差) 时标记为黄色警告
-    # 超时阈值自动取 1个周期 = 1/基准频率
-    elevation_frequency_tolerance: 0.2
+    # 高程最低安全频率比例（0~1）
+    # 实测频率低于 基准频率 * 此比例 时判定为 unsafe
+    # 超时阈值自动取 1/(基准频率 * 此比例)
+    elevation_min_frequency_ratio: 0.8
+
+    # 高程频率异常连续确认次数
+    # 连续 N 次检测到频率异常才触发 unsafe，避免单次抖动误判
+    elevation_frequency_violation_count: 5
 
     # ========== 安全状态发布参数 ==========
 

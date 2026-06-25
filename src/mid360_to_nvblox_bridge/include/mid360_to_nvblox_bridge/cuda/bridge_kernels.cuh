@@ -247,6 +247,32 @@ __global__ void reconstructPointcloudKernel(
 }
 
 // ============================================================================
+// Kernel 4b: Output grid directly as depth image (skip XYZ reconstruction)
+// ============================================================================
+// Bridge grid: v=0 is min elevation (bottom).
+// nvblox depth image: row=0 is max elevation (top).
+// This kernel flips the row order and writes range values to a depth image buffer.
+__global__ void gridToDepthImageKernel(
+    const GridCellGPU* __restrict__ grid,
+    const int width,
+    const int height,
+    float* __restrict__ depth_image)
+{
+  const int u = blockIdx.x * blockDim.x + threadIdx.x;
+  const int v = blockIdx.y * blockDim.y + threadIdx.y;
+
+  if (u >= width || v >= height) {
+    return;
+  }
+
+  const int grid_idx = v * width + u;
+  const int nvblox_row = height - 1 - v;
+  const int img_idx = nvblox_row * width + u;
+
+  depth_image[img_idx] = grid[grid_idx].valid ? grid[grid_idx].depth : 0.0f;
+}
+
+// ============================================================================
 // Kernel 5: Optimized version with min/max tracking
 // ============================================================================
 __global__ void pointsToGridMinMaxKernel(
